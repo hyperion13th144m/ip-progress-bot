@@ -1,0 +1,22 @@
+services:
+  api-server:
+    build: ./api-server
+    env_file:
+      - ./api-server/.env
+    restart: unless-stopped
+    networks:
+      - internal
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - api-server
+    restart: unless-stopped
+    networks:
+      - internal
+
+networks:
+  internal:
