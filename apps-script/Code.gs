@@ -33,7 +33,7 @@ function getConfig_() {
 /**
  * Botがスペースに追加された時
  */
-function onAddToSpace(event) {
+function onAddedToSpace(event) {
   return textResponse_(
     '整理番号 検索Botです。整理番号を送信してください(例: 12345-JP)。\n' +
       '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。'
@@ -43,7 +43,7 @@ function onAddToSpace(event) {
 /**
  * Botがスペースから削除された時
  */
-function onRemoveFromSpace(event) {
+function onRemovedFromSpace(event) {
   console.log('Bot removed from space');
 }
 
