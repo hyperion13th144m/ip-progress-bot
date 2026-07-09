@@ -47,17 +47,20 @@ npm start
 curl -H "x-api-key: <.envのAPI_KEY>" "http://localhost:3000/api/progress?seiriNum=12345-JP"
 ```
 
-### JuninProcess memo更新UI
+### 進捗レコード memo更新UI
 
 `api-server` 起動後、ブラウザで `http://localhost:3000/`(または公開URL)を開くと、
-整理番号でJuninProcessのレコードを検索し、一覧から対象レコードを選んでmemoに
-追記できるUIが使えます。画面上部でAPIキー(`.env`の`API_KEY`と同じ値)を入力する
+対象テーブル(国内/PCT国際段階/外国(国別))と整理番号でレコードを検索し、一覧から対象レコードを
+選んでmemoに追記できるUIが使えます。画面上部でAPIキー(`.env`の`API_KEY`と同じ値)を入力する
 必要があります。
 
-- `GET /api/junin-process?seiriNum=12345-JP` : 該当レコードの一覧(SeiriNum/sagyoDD/sagyoTT等)を返す
-- `POST /api/junin-process/memo` : `{ seiriNum, sagyoDD, sagyoTT, text }` を渡すと、
+対象テーブルは `JuninProcess`(国内) / `ForeignProcess`(PCT国際段階) / `ForeignCProcess`(外国(国別))
+の3つで、APIには `table` パラメータ(`junin` / `foreign` / `foreignc`)で指定します。
+
+- `GET /api/records?table=junin&seiriNum=12345-JP` : 該当レコードの一覧(SeiriNum/sagyoDD/sagyoTT等)を返す
+- `POST /api/records/memo` : `{ table, seiriNum, sagyoDD, sagyoTT, text }` を渡すと、
   `SeiriNum + sagyoDD + sagyoTT` で特定したレコードのmemoに`text`を追記する(既存memoがあれば
-  改行して追記、無ければそのまま設定。JuninProcessへのINSERTは行わない)
+  改行して追記、無ければそのまま設定。対象テーブルへのINSERTは行わない)
 
 
 

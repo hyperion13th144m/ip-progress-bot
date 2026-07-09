@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JuninProcess メモ更新</title>
+<title>進捗レコード メモ更新</title>
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -22,7 +22,7 @@
     margin-bottom: 1rem;
   }
   label { display: block; font-size: 0.85rem; margin-bottom: 0.25rem; opacity: 0.8; }
-  input[type=text], input[type=password], textarea {
+  input[type=text], input[type=password], select, textarea {
     width: 100%;
     box-sizing: border-box;
     padding: 0.5rem;
@@ -55,7 +55,7 @@
 </head>
 <body>
 
-<h1>JuninProcess メモ更新</h1>
+<h1>進捗レコード メモ更新</h1>
 
 <fieldset>
   <legend>接続設定</legend>
@@ -65,6 +65,12 @@
 
 <fieldset>
   <legend>整理番号で検索</legend>
+  <label for="tableSelect">対象テーブル</label>
+  <select id="tableSelect">
+    <option value="junin">国内(JuninProcess)</option>
+    <option value="foreign">PCT国際段階(ForeignProcess)</option>
+    <option value="foreignc">外国(国別)(ForeignCProcess)</option>
+  </select>
   <label for="seiriNum">整理番号</label>
   <input type="text" id="seiriNum" placeholder="例: 12345-JP">
   <button id="searchBtn">検索</button>
@@ -84,12 +90,18 @@
 <div id="message"></div>
 
 <script>
-const state = { records: [], selectedIndex: -1 };
+const state = { records: [], selectedIndex: -1, table: 'junin' };
 
 const apiKeyInput = document.getElementById('apiKey');
 apiKeyInput.value = localStorage.getItem('juninApiKey') || '';
 apiKeyInput.addEventListener('change', () => {
   localStorage.setItem('juninApiKey', apiKeyInput.value);
+});
+
+const tableSelect = document.getElementById('tableSelect');
+tableSelect.value = localStorage.getItem('recordsTable') || 'junin';
+tableSelect.addEventListener('change', () => {
+  localStorage.setItem('recordsTable', tableSelect.value);
 });
 
 function showMessage(text, kind) {
@@ -174,7 +186,11 @@ document.getElementById('searchBtn').addEventListener('click', async () => {
   document.getElementById('memoForm').style.display = 'none';
   document.getElementById('selectedInfo').textContent = 'レコードを選択してください。';
   try {
-    const data = await apiFetch('/api/junin-process?seiriNum=' + encodeURIComponent(seiriNum));
+    const data = await apiFetch(
+      '/api/records?table=' + encodeURIComponent(tableSelect.value) +
+      '&seiriNum=' + encodeURIComponent(seiriNum)
+    );
+    state.table = tableSelect.value;
     state.records = data.records || [];
     renderResults();
     showMessage(`${state.records.length} 件見つかりました。`, 'ok');
@@ -198,10 +214,11 @@ document.getElementById('updateBtn').addEventListener('click', async () => {
   const rec = state.records[state.selectedIndex];
   showMessage('更新中...', '');
   try {
-    const data = await apiFetch('/api/junin-process/memo', {
+    const data = await apiFetch('/api/records/memo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        table: state.table,
         seiriNum: rec.SeiriNum,
         sagyoDD: rec.sagyoDD,
         sagyoTT: rec.sagyoTT,

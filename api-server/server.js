@@ -219,22 +219,37 @@ async function getFiling(pool, seiriNum) {
   };
 }
 
-// ---- 整理番号でJuninProcessの該当レコード一覧を取得 -----------------------
+// ---- memo更新対象テーブルのホワイトリスト --------------------------------
+// テーブル名はSQLの識別子でありパラメータ化(バインド変数)できないため、
+// クライアントから受け取るのは下記キーのみとし、実テーブル名は必ずこの
+// マップ経由で解決する(生のテーブル名をそのまま文字列連結しない)。
+const RECORD_TABLES = {
+  junin: { table: 'JuninProcess', label: '国内' },
+  foreign: { table: 'ForeignProcess', label: 'PCT国際段階' },
+  foreignc: { table: 'ForeignCProcess', label: '外国(国別)' },
+};
+
+function resolveTable(key) {
+  return Object.prototype.hasOwnProperty.call(RECORD_TABLES, key) ? RECORD_TABLES[key] : null;
+}
+
 // sagyoDD/sagyoTTはUPDATE時にレコードを一意に特定するためのキーとして
 // クライアントにそのまま返す(SEARCH_QUERYと同様、日付+時刻の組み合わせ)。
-const JUNIN_LIST_QUERY = `
+function buildListQuery(tableName) {
+  return `
 SELECT SeiriNum, sagyoDD, sagyoTT, sagyo, tanto, memo, kigen, sagyoKanryo, folder
-FROM JuninProcess
+FROM ${tableName}
 WHERE SeiriNum = @seiriNum
 ORDER BY sagyoDD ASC, sagyoTT ASC;
 `;
+}
 
-// ---- JuninProcess.memo の追記更新 --------------------------------------
 // SeiriNum + sagyoDD + sagyoTT の組み合わせで対象レコードを一意に特定する。
 // 既にmemoに値がある場合は改行を挟んで追記し、空/NULLの場合はそのまま設定する。
 // (INSERTは行わない。該当レコードが無ければ404を返す)
-const JUNIN_MEMO_UPDATE_QUERY = `
-UPDATE JuninProcess
+function buildMemoUpdateQuery(tableName) {
+  return `
+UPDATE ${tableName}
 SET memo = CASE
   WHEN memo IS NULL OR LTRIM(RTRIM(memo)) = N'' THEN @text
   ELSE memo + N'\n' + @text
@@ -242,11 +257,17 @@ END
 OUTPUT INSERTED.memo
 WHERE SeiriNum = @seiriNum AND sagyoDD = @sagyoDD AND sagyoTT = @sagyoTT;
 `;
+}
 
-// GET /api/junin-process?seiriNum=XXXXX
-app.get('/api/junin-process', requireApiKey, async (req, res) => {
+// GET /api/records?table=junin&seiriNum=XXXXX
+// table: junin(国内=JuninProcess) / foreign(PCT国際段階=ForeignProcess) / foreignc(外国(国別)=ForeignCProcess)
+app.get('/api/records', requireApiKey, async (req, res) => {
+  const entry = resolveTable((req.query.table || '').trim());
+  if (!entry) {
+    return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
+  }
+
   const seiriNum = (req.query.seiriNum || '').trim();
-
   if (!seiriNum) {
     return res.status(400).json({ error: 'seiriNum is required' });
   }
@@ -259,27 +280,32 @@ app.get('/api/junin-process', requireApiKey, async (req, res) => {
     const result = await pool
       .request()
       .input('seiriNum', sql.NVarChar(20), seiriNum)
-      .query(JUNIN_LIST_QUERY);
+      .query(buildListQuery(entry.table));
 
     return res.json({
+      table: req.query.table,
       seiriNum,
       count: result.recordset.length,
       records: result.recordset,
     });
   } catch (err) {
-    console.error('JuninProcess一覧取得エラー:', err);
+    console.error(`${entry.table}一覧取得エラー:`, err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
 
-// POST /api/junin-process/memo
-// body: { seiriNum, sagyoDD, sagyoTT, text }
-// sagyoDD/sagyoTTは GET /api/junin-process のレスポンスに含まれる値をそのまま渡すこと。
-app.post('/api/junin-process/memo', requireApiKey, async (req, res) => {
-  const { seiriNum, sagyoDD, sagyoTT, text } = req.body || {};
+// POST /api/records/memo
+// body: { table, seiriNum, sagyoDD, sagyoTT, text }
+// sagyoDD/sagyoTTは GET /api/records のレスポンスに含まれる値をそのまま渡すこと。
+app.post('/api/records/memo', requireApiKey, async (req, res) => {
+  const { table, seiriNum, sagyoDD, sagyoTT, text } = req.body || {};
 
+  const entry = resolveTable(table);
+  if (!entry) {
+    return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
+  }
   if (!seiriNum || !sagyoDD || !sagyoTT || !text) {
-    return res.status(400).json({ error: 'seiriNum, sagyoDD, sagyoTT, text are all required' });
+    return res.status(400).json({ error: 'table, seiriNum, sagyoDD, sagyoTT, text are all required' });
   }
   if (String(seiriNum).length > 20) {
     return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
@@ -299,7 +325,7 @@ app.post('/api/junin-process/memo', requireApiKey, async (req, res) => {
       .input('sagyoDD', sql.DateTime, sagyoDDDate)
       .input('sagyoTT', sql.DateTime, sagyoTTDate)
       .input('text', sql.NVarChar(sql.MAX), text)
-      .query(JUNIN_MEMO_UPDATE_QUERY);
+      .query(buildMemoUpdateQuery(entry.table));
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ error: 'record_not_found' });
@@ -307,7 +333,7 @@ app.post('/api/junin-process/memo', requireApiKey, async (req, res) => {
 
     return res.json({ memo: result.recordset[0].memo });
   } catch (err) {
-    console.error('memo更新エラー:', err);
+    console.error(`${entry.table} memo更新エラー:`, err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
