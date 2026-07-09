@@ -47,6 +47,20 @@ npm start
 curl -H "x-api-key: <.envのAPI_KEY>" "http://localhost:3000/api/progress?seiriNum=12345-JP"
 ```
 
+### JuninProcess memo更新UI
+
+`api-server` 起動後、ブラウザで `http://localhost:3000/`(または公開URL)を開くと、
+整理番号でJuninProcessのレコードを検索し、一覧から対象レコードを選んでmemoに
+追記できるUIが使えます。画面上部でAPIキー(`.env`の`API_KEY`と同じ値)を入力する
+必要があります。
+
+- `GET /api/junin-process?seiriNum=12345-JP` : 該当レコードの一覧(SeiriNum/sagyoDD/sagyoTT等)を返す
+- `POST /api/junin-process/memo` : `{ seiriNum, sagyoDD, sagyoTT, text }` を渡すと、
+  `SeiriNum + sagyoDD + sagyoTT` で特定したレコードのmemoに`text`を追記する(既存memoがあれば
+  改行して追記、無ければそのまま設定。JuninProcessへのINSERTは行わない)
+
+
+
 ### Dockerでの起動(推奨: cloudflared込み)
 
 api-server と cloudflared(Cloudflare Tunnel)を `docker-compose` でまとめて起動できます。

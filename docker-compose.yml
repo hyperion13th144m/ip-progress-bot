@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     networks:
       - internal
+    ports:
+      - "3000:3000"
 
   cloudflared:
     image: cloudflare/cloudflared:latest
