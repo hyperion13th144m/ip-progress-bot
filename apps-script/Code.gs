@@ -69,7 +69,7 @@ function onMessage(event) {
       return textResponse_(`整理番号「${seiriNum}」の作業履歴は見つかりませんでした。`);
     }
 
-    return textResponse_(formatProgressMessage_(seiriNum, data.records));
+    return textResponse_(formatProgressMessage_(seiriNum, data.records, data.filing));
   } catch (err) {
     console.error(err);
     return textResponse_(`エラーが発生しました: ${err.message}`);
@@ -137,12 +137,14 @@ function fetchProgress_(seiriNum) {
 // 表示順(この順番でグループ化して表示)
 const CATEGORY_ORDER = ['国内', 'PCT国際段階', '外国(国別)'];
 const MAX_RECORDS_PER_CATEGORY = 15;
+// filing.yearType(3=昭和, 4=平成, 5=西暦)に対応する元号表記
+const GENGO_LABEL = { 3: '昭', 4: '平', 5: '20' };
 
 /**
  * 検索結果をChatメッセージ用のテキストに整形する。
  * カテゴリごとにグループ化し、各カテゴリ内は新しい順に表示する。
  */
-function formatProgressMessage_(seiriNum, records) {
+function formatProgressMessage_(seiriNum, records, filing) {
   const byCategory = {};
   records.forEach((r) => {
     if (!byCategory[r.category]) byCategory[r.category] = [];
@@ -151,6 +153,10 @@ function formatProgressMessage_(seiriNum, records) {
 
   const lines = [];
   lines.push(`*整理番号: ${seiriNum}*  (該当 ${records.length} 件)`);
+
+  if (filing) {
+    lines.push(formatFilingHeaderLine_(filing));
+  }
 
   const categories = CATEGORY_ORDER.filter((c) => byCategory[c]).concat(
     Object.keys(byCategory).filter((c) => CATEGORY_ORDER.indexOf(c) === -1)
@@ -180,7 +186,29 @@ function formatProgressMessage_(seiriNum, records) {
     }
   });
 
+  if (filing) {
+    lines.push('');
+    lines.push(`*【出願手続履歴】* (${filing.procedures.length}件)`);
+    if (filing.procedures.length === 0) {
+      lines.push('・(履歴なし)');
+    } else {
+      filing.procedures.forEach((p) => {
+        lines.push(`・${p.procedureDate}  ${p.procedure}`);
+      });
+    }
+  }
+
   return lines.join('\n');
+}
+
+/**
+ * 「出願番号：」行を組み立てる。documentUrlがあればChatのリンク記法にする。
+ */
+function formatFilingHeaderLine_(filing) {
+  const gengo = GENGO_LABEL[filing.yearType] || '';
+  const label = `${filing.lawExpr}${gengo}${filing.filingYear}-${filing.filingSequence}`;
+  const value = filing.documentUrl ? `<${filing.documentUrl}|${label}>` : label;
+  return `出願番号：${value}`;
 }
 
 /**

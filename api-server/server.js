@@ -113,6 +113,110 @@ FROM (
 ORDER BY actualDateTime ASC;
 `;
 
+// ---- 整理番号 -> 出願番号 -> 対特許庁手続履歴(filing) -----------------------
+// AppliNum(9桁数値)は ABBCCCCCC の形式:
+//   A   : 元号種別 (3=昭和, 4=平成, 5=西暦)
+//   BB  : 年 (Aが5の場合は西暦下2桁)
+//   CCCCCC : 通し番号
+// 整理番号がどの法律のテーブルにヒットするかで law(法律種別)を判定する。
+// 同じ整理番号が複数の法律テーブルにヒットすることは想定しないが、
+// 念のため 1(特許) > 2(実案) > 3(意匠) > 4(商標) の優先順で1件のみ採用する。
+const LAW_EXPR = { 1: '特許', 2: '実案', 3: '意匠', 4: '商標' };
+const TYUKAN_TABLE_BY_LAW = {
+  1: 'TyukanForTokkyo',
+  2: 'TyukanForJituyo',
+  3: 'TyukanForDesign',
+  4: 'TyukanForBrand',
+};
+
+const FILING_LOOKUP_QUERY = `
+SELECT TOP 1 AppliNum, law
+FROM (
+  SELECT AppliNum, 1 AS law FROM TokkyoTable WHERE SeiriNum = @seiriNum
+  UNION ALL
+  SELECT AppliNum, 2 AS law FROM JituyoTable WHERE SeiriNum = @seiriNum
+  UNION ALL
+  SELECT AppliNum, 3 AS law FROM DesignTable WHERE SeiriNum = @seiriNum
+  UNION ALL
+  SELECT AppliNum, 4 AS law FROM BrandTable WHERE SeiriNum = @seiriNum
+) AS matched
+ORDER BY law ASC;
+`;
+
+function formatDate(date) {
+  if (!date) return null;
+  const d = new Date(date);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}/${mm}/${dd}`;
+}
+
+// ---- 出願番号 -> 文書URL -------------------------------------------------
+// 社内LAN限定の文書サーバーへのURLを組み立てる。
+// URL形式: ${URL_PREFIX}/${YEAR_PART}/${lawExpr}${元号}${filingYear}-${filingSequence}/
+const GENGO_BASE_YEAR = { 3: 1925, 4: 1988, 5: 2000 }; // 3=昭和, 4=平成, 5=西暦
+const GENGO_LABEL = { 3: '昭', 4: '平', 5: '20' };
+
+// 西暦年(YYYY)を、偶数年始まりの2年区切り("YYYY-XX")に変換する。
+// 偶数年: `${YYYY}-${(YYYY+1)%100}` / 奇数年: `${YYYY-1}-${YYYY%100}`
+function buildYearPart(seirekiYear) {
+  if (seirekiYear % 2 === 0) {
+    return `${seirekiYear}-${String((seirekiYear + 1) % 100).padStart(2, '0')}`;
+  }
+  return `${seirekiYear - 1}-${String(seirekiYear % 100).padStart(2, '0')}`;
+}
+
+function buildDocumentUrl(lawExpr, yearType, filingYear, filingSequence) {
+  const urlPrefix = process.env.DOC_SERVER_URL_PREFIX;
+  if (!urlPrefix) {
+    console.warn('警告: DOC_SERVER_URL_PREFIX が未設定のため documentUrl を生成できません。');
+    return null;
+  }
+  const seirekiYear = GENGO_BASE_YEAR[yearType] + parseInt(filingYear, 10);
+  const yearPart = buildYearPart(seirekiYear);
+  const gengo = GENGO_LABEL[yearType];
+  return `${urlPrefix.replace(/\/$/, '')}/${yearPart}/${lawExpr}${gengo}${filingYear}-${filingSequence}/`;
+}
+
+async function getFiling(pool, seiriNum) {
+  const lookupResult = await pool
+    .request()
+    .input('seiriNum', sql.NVarChar(20), seiriNum)
+    .query(FILING_LOOKUP_QUERY);
+
+  if (lookupResult.recordset.length === 0) {
+    return null;
+  }
+
+  const { AppliNum, law } = lookupResult.recordset[0];
+  const appliNumStr = String(AppliNum);
+  const lawExpr = LAW_EXPR[law];
+  const yearType = parseInt(appliNumStr.substring(0, 1), 10);
+  const filingYear = appliNumStr.substring(1, 3);
+  const filingSequence = appliNumStr.substring(3, 9);
+
+  const proceduresResult = await pool
+    .request()
+    .input('appliNum', sql.Int, AppliNum)
+    .query(
+      `SELECT Kind, AppliDate FROM ${TYUKAN_TABLE_BY_LAW[law]} WHERE AppliNum = @appliNum ORDER BY AppliDate ASC`
+    );
+
+  return {
+    law,
+    lawExpr,
+    yearType,
+    filingYear,
+    filingSequence,
+    documentUrl: buildDocumentUrl(lawExpr, yearType, filingYear, filingSequence),
+    procedures: proceduresResult.recordset.map((r) => ({
+      procedureDate: formatDate(r.AppliDate),
+      procedure: r.Kind,
+    })),
+  };
+}
+
 // ---- ヘルスチェック ---------------------------------------------------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -130,15 +234,16 @@ app.get('/api/progress', requireApiKey, async (req, res) => {
 
   try {
     const pool = await getPool();
-    const result = await pool
-      .request()
-      .input('seiriNum', sql.NVarChar(20), seiriNum)
-      .query(SEARCH_QUERY);
+    const [result, filing] = await Promise.all([
+      pool.request().input('seiriNum', sql.NVarChar(20), seiriNum).query(SEARCH_QUERY),
+      getFiling(pool, seiriNum),
+    ]);
 
     return res.json({
       seiriNum,
       count: result.recordset.length,
       records: result.recordset,
+      filing,
     });
   } catch (err) {
     console.error('検索エラー:', err);
