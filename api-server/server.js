@@ -19,10 +19,12 @@
 
 const path = require('path');
 const express = require('express');
+const morgan = require('morgan');
 const sql = require('mssql');
 require('dotenv').config();
 
 const app = express();
+app.use(morgan('combined'));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -257,6 +259,42 @@ WHERE SeiriNum = @seiriNum AND sagyoDD = @sagyoDD AND sagyoTT = @sagyoTT;
 `;
 }
 
+// memoと同じ一意特定方法でsagyo列を上書きする。
+function buildSagyoUpdateQuery(tableName) {
+  return `
+UPDATE ${tableName}
+SET sagyo = @text
+OUTPUT INSERTED.sagyo
+WHERE SeiriNum = @seiriNum AND sagyoDD = @sagyoDD AND sagyoTT = @sagyoTT;
+`;
+}
+
+// memo/sagyo更新と同じ一意特定方法でレコードを削除する。
+function buildDeleteQuery(tableName) {
+  return `
+DELETE FROM ${tableName}
+OUTPUT DELETED.SeiriNum
+WHERE SeiriNum = @seiriNum AND sagyoDD = @sagyoDD AND sagyoTT = @sagyoTT;
+`;
+}
+
+// 新規追加時、整理番号が対象テーブルに1件も存在しない場合はタイプミス等の
+// 可能性が高いため追加を拒否する。そのための存在チェック。
+function buildSeiriNumExistsQuery(tableName) {
+  return `SELECT TOP 1 1 AS found FROM ${tableName} WHERE SeiriNum = @seiriNum;`;
+}
+
+// kigen/sagyoKanryo/folderはこのフォームでは入力させないためINSERT対象に含めず、
+// NULLのまま挿入する。
+function buildInsertQuery(tableName) {
+  return `
+INSERT INTO ${tableName} (SeiriNum, sagyoDD, sagyoTT, sagyo, tanto, memo)
+OUTPUT INSERTED.SeiriNum, INSERTED.sagyoDD, INSERTED.sagyoTT, INSERTED.sagyo,
+       INSERTED.tanto, INSERTED.memo, INSERTED.kigen, INSERTED.sagyoKanryo, INSERTED.folder
+VALUES (@seiriNum, @sagyoDD, @sagyoTT, @sagyo, @tanto, @memo);
+`;
+}
+
 // GET /api/records?table=junin&seiriNum=XXXXX
 // table: junin(国内=JuninProcess) / foreign(PCT国際段階=ForeignProcess) / foreignc(外国(国別)=ForeignCProcess)
 app.get('/api/records', requireApiKey, async (req, res) => {
@@ -288,6 +326,64 @@ app.get('/api/records', requireApiKey, async (req, res) => {
     });
   } catch (err) {
     console.error(`${entry.table}一覧取得エラー:`, err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/records
+// body: { table, seiriNum, sagyo, tanto, memo }
+// sagyoDD/sagyoTTはクライアントに入力させず、サーバー側で現在日時から生成する。
+// sagyoTTはSEARCH_QUERYと同じ規約(日付部分はUnixEpoch=1970-01-01固定、時刻部分のみ有効)
+// に合わせて組み立てる。kigen/sagyoKanryo/folderはNULLのまま挿入する。
+app.post('/api/records', requireApiKey, async (req, res) => {
+  const { table, seiriNum, sagyo, tanto, memo } = req.body || {};
+
+  const entry = resolveTable(table);
+  if (!entry) {
+    return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
+  }
+
+  const seiriNumTrimmed = (seiriNum || '').trim();
+  if (!seiriNumTrimmed) {
+    return res.status(400).json({ error: 'seiriNum is required' });
+  }
+  if (seiriNumTrimmed.length > 20) {
+    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  }
+
+  const sagyoTrimmed = (sagyo || '').trim();
+  if (!sagyoTrimmed) {
+    return res.status(400).json({ error: 'sagyo is required' });
+  }
+
+  const now = new Date();
+  const sagyoDD = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sagyoTT = new Date(1970, 0, 1, now.getHours(), now.getMinutes(), now.getSeconds());
+
+  try {
+    const pool = await getPool();
+
+    const existsResult = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNumTrimmed)
+      .query(buildSeiriNumExistsQuery(entry.table));
+    if (existsResult.recordset.length === 0) {
+      return res.status(400).json({ error: 'seiriNum_not_found' });
+    }
+
+    const result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNumTrimmed)
+      .input('sagyoDD', sql.DateTime, sagyoDD)
+      .input('sagyoTT', sql.DateTime, sagyoTT)
+      .input('sagyo', sql.NVarChar(sql.MAX), sagyoTrimmed)
+      .input('tanto', sql.NVarChar(sql.MAX), (tanto || '').trim() || null)
+      .input('memo', sql.NVarChar(sql.MAX), typeof memo === 'string' ? memo : '')
+      .query(buildInsertQuery(entry.table));
+
+    return res.status(201).json({ record: result.recordset[0] });
+  } catch (err) {
+    console.error(`${entry.table}新規追加エラー:`, err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
@@ -332,6 +428,94 @@ app.post('/api/records/memo', requireApiKey, async (req, res) => {
     return res.json({ memo: result.recordset[0].memo });
   } catch (err) {
     console.error(`${entry.table} memo更新エラー:`, err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/records/sagyo
+// body: { table, seiriNum, sagyoDD, sagyoTT, text }
+// sagyoDD/sagyoTTは GET /api/records のレスポンスに含まれる値をそのまま渡すこと。
+app.post('/api/records/sagyo', requireApiKey, async (req, res) => {
+  const { table, seiriNum, sagyoDD, sagyoTT, text } = req.body || {};
+
+  const entry = resolveTable(table);
+  if (!entry) {
+    return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
+  }
+  if (!seiriNum || !sagyoDD || !sagyoTT || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'table, seiriNum, sagyoDD, sagyoTT, text are all required' });
+  }
+  if (String(seiriNum).length > 20) {
+    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  }
+
+  const sagyoDDDate = new Date(sagyoDD);
+  const sagyoTTDate = new Date(sagyoTT);
+  if (Number.isNaN(sagyoDDDate.getTime()) || Number.isNaN(sagyoTTDate.getTime())) {
+    return res.status(400).json({ error: 'invalid sagyoDD or sagyoTT' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNum)
+      .input('sagyoDD', sql.DateTime, sagyoDDDate)
+      .input('sagyoTT', sql.DateTime, sagyoTTDate)
+      .input('text', sql.NVarChar(sql.MAX), text.trim())
+      .query(buildSagyoUpdateQuery(entry.table));
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'record_not_found' });
+    }
+
+    return res.json({ sagyo: result.recordset[0].sagyo });
+  } catch (err) {
+    console.error(`${entry.table} sagyo更新エラー:`, err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/records/delete
+// body: { table, seiriNum, sagyoDD, sagyoTT }
+// sagyoDD/sagyoTTは GET /api/records のレスポンスに含まれる値をそのまま渡すこと。
+// (DELETEメソッド+bodyはクライアント/プロキシによって扱いが不安定なためPOSTで統一する)
+app.post('/api/records/delete', requireApiKey, async (req, res) => {
+  const { table, seiriNum, sagyoDD, sagyoTT } = req.body || {};
+
+  const entry = resolveTable(table);
+  if (!entry) {
+    return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
+  }
+  if (!seiriNum || !sagyoDD || !sagyoTT) {
+    return res.status(400).json({ error: 'table, seiriNum, sagyoDD, sagyoTT are all required' });
+  }
+  if (String(seiriNum).length > 20) {
+    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  }
+
+  const sagyoDDDate = new Date(sagyoDD);
+  const sagyoTTDate = new Date(sagyoTT);
+  if (Number.isNaN(sagyoDDDate.getTime()) || Number.isNaN(sagyoTTDate.getTime())) {
+    return res.status(400).json({ error: 'invalid sagyoDD or sagyoTT' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNum)
+      .input('sagyoDD', sql.DateTime, sagyoDDDate)
+      .input('sagyoTT', sql.DateTime, sagyoTTDate)
+      .query(buildDeleteQuery(entry.table));
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'record_not_found' });
+    }
+
+    return res.json({ deleted: true });
+  } catch (err) {
+    console.error(`${entry.table} 削除エラー:`, err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });

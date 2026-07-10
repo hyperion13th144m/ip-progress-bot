@@ -42,6 +42,7 @@
     color: white;
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { background: #dc2626; }
   table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
   th, td { border: 1px solid #8884; padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
   tr.selected { outline: 2px solid #2563eb; }
@@ -51,6 +52,20 @@
   #message.error { color: #dc2626; }
   #message.ok { color: #16a34a; }
   #selectedInfo { font-size: 0.9rem; opacity: 0.85; margin-bottom: 0.75rem; white-space: pre-wrap; }
+  .inline-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .inline-message { font-size: 0.9rem; }
+  .inline-message.error { color: #dc2626; }
+  .inline-message.ok { color: #16a34a; }
+  .panel {
+    border-radius: 10px;
+    padding: 1rem 1rem 0.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .panel > h2:first-child { margin-top: 0; }
+  .panel-add { background: rgba(37, 99, 235, 0.08); }
+  .panel-selected { background: rgba(217, 119, 6, 0.08); }
+  .section-divider { border: none; border-top: 2px dashed #8886; margin: 2rem 0; }
+  #resultArea { margin-bottom: 1.5rem; }
 </style>
 </head>
 <body>
@@ -76,21 +91,102 @@
   <button id="searchBtn">検索</button>
 </fieldset>
 
-<h2>検索結果(クリックで選択)</h2>
+<h2 class="inline-actions">検索結果(クリックで選択) <span id="searchMessage" class="inline-message"></span></h2>
 <div id="resultArea">まだ検索していません。</div>
 
+<section class="panel panel-add">
+<h2>新規作業レコードを追加</h2>
+<fieldset id="newRecordForm">
+  <p style="font-size:0.85rem; opacity:0.8; margin-top:0;">
+    対象は上の「対象テーブル」「整理番号」です。作業日・時刻は登録時の日時が自動で設定されます。
+  </p>
+  <label for="newSagyoCategory">作業カテゴリ</label>
+  <select id="newSagyoCategory"></select>
+  <label for="newSagyoInput">作業(一覧から選択、または自由入力)</label>
+  <input type="text" id="newSagyoInput" list="newSagyoOptions" placeholder="作業を選択または入力">
+  <datalist id="newSagyoOptions"></datalist>
+  <label for="newTanto">担当</label>
+  <input type="text" id="newTanto" placeholder="担当者名">
+  <label for="newMemo">memo</label>
+  <textarea id="newMemo" placeholder="メモを入力(改行可)"></textarea>
+  <div class="inline-actions">
+    <button id="addRecordBtn">追加</button>
+    <span id="addRecordMessage" class="inline-message"></span>
+  </div>
+</fieldset>
+</section>
+
+<hr class="section-divider">
+
+<section class="panel panel-selected">
 <h2>選択中のレコード</h2>
 <div id="selectedInfo">レコードを選択してください。</div>
+<fieldset id="sagyoForm" style="display:none;">
+  <label for="sagyoCategory">作業カテゴリ</label>
+  <select id="sagyoCategory"></select>
+  <label for="sagyoInput">作業(自由入力、または入力欄にある作業を削除するとプルダウンから選択できます)</label>
+  <input type="text" id="sagyoInput" list="sagyoOptions" placeholder="作業を選択または入力">
+  <datalist id="sagyoOptions"></datalist>
+  <button id="updateSagyoBtn">作業を更新</button>
+</fieldset>
+
 <fieldset id="memoForm" style="display:none;">
   <label for="memoText">memo(この内容でそのまま上書きされます)</label>
   <textarea id="memoText" placeholder="メモを入力"></textarea>
   <button id="updateBtn">更新</button>
 </fieldset>
 
+<fieldset id="deleteForm" style="display:none;">
+  <legend>このレコードを削除</legend>
+  <div class="inline-actions">
+    <button id="deleteRecordBtn" class="danger">選択中のレコードを削除</button>
+    <span id="deleteRecordMessage" class="inline-message"></span>
+  </div>
+</fieldset>
+</section>
+
 <div id="message"></div>
 
 <script>
-const state = { records: [], selectedIndex: -1, table: 'junin' };
+const state = { records: [], selectedIndex: -1, table: 'junin', seiriNum: '' };
+
+// 作業(sagyo)のカテゴリ別選択肢。「すべて」は全カテゴリの合算。
+const SAGYO_CATEGORIES = {
+  '出願段階': ['受任処理', '原稿送付', 'オンライン出願済', '出願依頼受け', '修正原稿送付', '提出依頼受け', '修正依頼受け', '案送付', '修正依頼Fax受け', '案作成依頼受け'],
+  '中間処理': ['拒絶理由通知書', '公開公報発行受け', '意見書・補正書', 'コメント送付', '審査請求書', '公開公報', '審査請求依頼受け', '拒絶査定', '審査請求しない', '審査請求書提出', '拒絶理由通知', '意・補正案送付', '意見書・補正書提出', '手続補正指令書(方式)', '手続補正書', '審査請求依頼あり', '特許庁中間書類受け取り', '審判官及び審判書記官氏名通知', '通知書'],
+  '登録後': ['特許査定', '年金', '特許公報', '特許料納付書', '年金納付', '特許証', '納付依頼受け', '特許公報発行受け', '特許証受け', '登録査定'],
+  'その他': ['放置依頼受け', 'Fax受け', '放置', '納品', '回答受け', '整理番号受け', '出願番号通知', 'クローズ処理', 'E-mail受信', '担当変更', '出願中止'],
+};
+
+// 作業カテゴリselectと候補datalistの組を初期化する(編集用・新規追加用で共用)。
+function setupSagyoCategoryPicker(categorySelectEl, datalistEl) {
+  Object.keys(SAGYO_CATEGORIES).forEach((category) => {
+    const opt = document.createElement('option');
+    opt.value = category;
+    opt.textContent = category;
+    categorySelectEl.appendChild(opt);
+  });
+  function render() {
+    const list = SAGYO_CATEGORIES[categorySelectEl.value] || [];
+    datalistEl.innerHTML = '';
+    list.forEach((sagyo) => {
+      const opt = document.createElement('option');
+      opt.value = sagyo;
+      datalistEl.appendChild(opt);
+    });
+  }
+  categorySelectEl.addEventListener('change', render);
+  render();
+}
+
+setupSagyoCategoryPicker(document.getElementById('sagyoCategory'), document.getElementById('sagyoOptions'));
+setupSagyoCategoryPicker(document.getElementById('newSagyoCategory'), document.getElementById('newSagyoOptions'));
+
+const newTantoInput = document.getElementById('newTanto');
+newTantoInput.value = localStorage.getItem('newRecordTanto') || '';
+newTantoInput.addEventListener('change', () => {
+  localStorage.setItem('newRecordTanto', newTantoInput.value);
+});
 
 const apiKeyInput = document.getElementById('apiKey');
 apiKeyInput.value = localStorage.getItem('juninApiKey') || '';
@@ -108,6 +204,24 @@ function showMessage(text, kind) {
   const el = document.getElementById('message');
   el.textContent = text;
   el.className = kind || '';
+}
+
+function showAddRecordMessage(text, kind) {
+  const el = document.getElementById('addRecordMessage');
+  el.textContent = text;
+  el.className = 'inline-message ' + (kind || '');
+}
+
+function showDeleteRecordMessage(text, kind) {
+  const el = document.getElementById('deleteRecordMessage');
+  el.textContent = text;
+  el.className = 'inline-message ' + (kind || '');
+}
+
+function showSearchMessage(text, kind) {
+  const el = document.getElementById('searchMessage');
+  el.textContent = text;
+  el.className = 'inline-message ' + (kind || '');
 }
 
 function formatDateTime(dateStr) {
@@ -171,17 +285,23 @@ function selectRecord(idx) {
   infoEl.textContent = `整理番号: ${rec.SeiriNum}\n作業: ${rec.sagyo || ''}  担当: ${rec.tanto || ''}`;
   document.getElementById('memoForm').style.display = '';
   document.getElementById('memoText').value = rec.memo || '';
+  document.getElementById('sagyoForm').style.display = '';
+  document.getElementById('sagyoInput').value = rec.sagyo || '';
+  document.getElementById('deleteForm').style.display = '';
+  showDeleteRecordMessage('', '');
 }
 
 document.getElementById('searchBtn').addEventListener('click', async () => {
   const seiriNum = document.getElementById('seiriNum').value.trim();
   if (!seiriNum) {
-    showMessage('整理番号を入力してください。', 'error');
+    showSearchMessage('整理番号を入力してください。', 'error');
     return;
   }
-  showMessage('検索中...', '');
+  showSearchMessage('検索中...', '');
   state.selectedIndex = -1;
   document.getElementById('memoForm').style.display = 'none';
+  document.getElementById('sagyoForm').style.display = 'none';
+  document.getElementById('deleteForm').style.display = 'none';
   document.getElementById('selectedInfo').textContent = 'レコードを選択してください。';
   try {
     const data = await apiFetch(
@@ -189,13 +309,14 @@ document.getElementById('searchBtn').addEventListener('click', async () => {
       '&seiriNum=' + encodeURIComponent(seiriNum)
     );
     state.table = tableSelect.value;
+    state.seiriNum = seiriNum;
     state.records = data.records || [];
     renderResults();
-    showMessage(`${state.records.length} 件見つかりました。`, 'ok');
+    showSearchMessage(`${state.records.length} 件見つかりました。`, 'ok');
   } catch (err) {
     state.records = [];
     renderResults();
-    showMessage('検索に失敗しました: ' + err.message, 'error');
+    showSearchMessage('検索に失敗しました: ' + err.message, 'error');
   }
 });
 
@@ -225,6 +346,126 @@ document.getElementById('updateBtn').addEventListener('click', async () => {
     showMessage('更新しました。', 'ok');
   } catch (err) {
     showMessage('更新に失敗しました: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('updateSagyoBtn').addEventListener('click', async () => {
+  if (state.selectedIndex < 0) {
+    showMessage('レコードを選択してください。', 'error');
+    return;
+  }
+  const text = document.getElementById('sagyoInput').value.trim();
+  if (!text) {
+    showMessage('作業を選択または入力してください。', 'error');
+    return;
+  }
+  const rec = state.records[state.selectedIndex];
+  showMessage('更新中...', '');
+  try {
+    const data = await apiFetch('/api/records/sagyo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table: state.table,
+        seiriNum: rec.SeiriNum,
+        sagyoDD: rec.sagyoDD,
+        sagyoTT: rec.sagyoTT,
+        text,
+      }),
+    });
+    rec.sagyo = data.sagyo;
+    renderResults();
+    selectRecord(state.selectedIndex);
+    showMessage('作業を更新しました。', 'ok');
+  } catch (err) {
+    showMessage('作業の更新に失敗しました: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('addRecordBtn').addEventListener('click', async () => {
+  const seiriNum = document.getElementById('seiriNum').value.trim();
+  if (!seiriNum) {
+    showAddRecordMessage('整理番号を入力してください。', 'error');
+    return;
+  }
+  const sagyo = document.getElementById('newSagyoInput').value.trim();
+  if (!sagyo) {
+    showAddRecordMessage('作業を選択または入力してください。', 'error');
+    return;
+  }
+  const tanto = newTantoInput.value.trim();
+  localStorage.setItem('newRecordTanto', tanto);
+  const memo = document.getElementById('newMemo').value;
+
+  showAddRecordMessage('追加中...', '');
+  try {
+    const data = await apiFetch('/api/records', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table: tableSelect.value,
+        seiriNum,
+        sagyo,
+        tanto,
+        memo,
+      }),
+    });
+    if (tableSelect.value === state.table && seiriNum === state.seiriNum) {
+      state.records.push(data.record);
+      renderResults();
+    }
+    document.getElementById('newSagyoInput').value = '';
+    document.getElementById('newMemo').value = '';
+    showAddRecordMessage('レコードを追加しました。検索し直すと一覧に反映されます。', 'ok');
+  } catch (err) {
+    if (err.message === 'seiriNum_not_found') {
+      showAddRecordMessage('この整理番号は対象テーブルに存在しません。先に検索して存在を確認してください。', 'error');
+    } else {
+      showAddRecordMessage('追加に失敗しました: ' + err.message, 'error');
+    }
+  }
+});
+
+document.getElementById('deleteRecordBtn').addEventListener('click', async () => {
+  if (state.selectedIndex < 0) {
+    showDeleteRecordMessage('レコードを選択してください。', 'error');
+    return;
+  }
+  const rec = state.records[state.selectedIndex];
+  const confirmed = confirm(
+    `以下のレコードを削除します。よろしいですか?\n\n` +
+    `整理番号: ${rec.SeiriNum}\n` +
+    `作業日: ${formatDateTime(rec.sagyoDD).split(' ')[0] || ''}\n` +
+    `作業: ${rec.sagyo || ''}\n` +
+    `担当: ${rec.tanto || ''}\n\n` +
+    `この操作は取り消せません。`
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  showDeleteRecordMessage('削除中...', '');
+  try {
+    await apiFetch('/api/records/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table: state.table,
+        seiriNum: rec.SeiriNum,
+        sagyoDD: rec.sagyoDD,
+        sagyoTT: rec.sagyoTT,
+      }),
+    });
+    state.records.splice(state.selectedIndex, 1);
+    state.selectedIndex = -1;
+    renderResults();
+    document.getElementById('memoForm').style.display = 'none';
+    document.getElementById('sagyoForm').style.display = 'none';
+    document.getElementById('deleteForm').style.display = 'none';
+    document.getElementById('selectedInfo').textContent = 'レコードを選択してください。';
+    showMessage('レコードを削除しました。', 'ok');
+  } catch (err) {
+    showDeleteRecordMessage('削除に失敗しました: ' + err.message, 'error');
   }
 });
 </script>
