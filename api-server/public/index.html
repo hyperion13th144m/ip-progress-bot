@@ -82,8 +82,8 @@
 <h2>選択中のレコード</h2>
 <div id="selectedInfo">レコードを選択してください。</div>
 <fieldset id="memoForm" style="display:none;">
-  <label for="memoText">追記する内容(既存のmemoがあればその末尾に改行して追加されます)</label>
-  <textarea id="memoText" placeholder="追記するメモを入力"></textarea>
+  <label for="memoText">memo(この内容でそのまま上書きされます)</label>
+  <textarea id="memoText" placeholder="メモを入力"></textarea>
   <button id="updateBtn">更新</button>
 </fieldset>
 
@@ -168,11 +168,9 @@ function selectRecord(idx) {
   renderResults();
   const rec = state.records[idx];
   const infoEl = document.getElementById('selectedInfo');
-  infoEl.textContent =
-    `整理番号: ${rec.SeiriNum}\n作業: ${rec.sagyo || ''}  担当: ${rec.tanto || ''}\n` +
-    `現在のmemo:\n${rec.memo || '(なし)'}`;
+  infoEl.textContent = `整理番号: ${rec.SeiriNum}\n作業: ${rec.sagyo || ''}  担当: ${rec.tanto || ''}`;
   document.getElementById('memoForm').style.display = '';
-  document.getElementById('memoText').value = '';
+  document.getElementById('memoText').value = rec.memo || '';
 }
 
 document.getElementById('searchBtn').addEventListener('click', async () => {
@@ -206,11 +204,7 @@ document.getElementById('updateBtn').addEventListener('click', async () => {
     showMessage('レコードを選択してください。', 'error');
     return;
   }
-  const text = document.getElementById('memoText').value.trim();
-  if (!text) {
-    showMessage('追記する内容を入力してください。', 'error');
-    return;
-  }
+  const text = document.getElementById('memoText').value;
   const rec = state.records[state.selectedIndex];
   showMessage('更新中...', '');
   try {

@@ -51,16 +51,16 @@ curl -H "x-api-key: <.envのAPI_KEY>" "http://localhost:3000/api/progress?seiriN
 
 `api-server` 起動後、ブラウザで `http://localhost:3000/`(または公開URL)を開くと、
 対象テーブル(国内/PCT国際段階/外国(国別))と整理番号でレコードを検索し、一覧から対象レコードを
-選んでmemoに追記できるUIが使えます。画面上部でAPIキー(`.env`の`API_KEY`と同じ値)を入力する
-必要があります。
+選ぶとmemoの現在値がテキスト欄に初期表示されるので、編集して更新できるUIが使えます。画面上部で
+APIキー(`.env`の`API_KEY`と同じ値)を入力する必要があります。
 
 対象テーブルは `JuninProcess`(国内) / `ForeignProcess`(PCT国際段階) / `ForeignCProcess`(外国(国別))
 の3つで、APIには `table` パラメータ(`junin` / `foreign` / `foreignc`)で指定します。
 
 - `GET /api/records?table=junin&seiriNum=12345-JP` : 該当レコードの一覧(SeiriNum/sagyoDD/sagyoTT等)を返す
 - `POST /api/records/memo` : `{ table, seiriNum, sagyoDD, sagyoTT, text }` を渡すと、
-  `SeiriNum + sagyoDD + sagyoTT` で特定したレコードのmemoに`text`を追記する(既存memoがあれば
-  改行して追記、無ければそのまま設定。対象テーブルへのINSERTは行わない)
+  `SeiriNum + sagyoDD + sagyoTT` で特定したレコードのmemoを`text`でそのまま上書きする(追記ではなく
+  置き換え。対象テーブルへのINSERTは行わない)
 
 
 

@@ -245,15 +245,13 @@ ORDER BY sagyoDD ASC, sagyoTT ASC;
 }
 
 // SeiriNum + sagyoDD + sagyoTT の組み合わせで対象レコードを一意に特定する。
-// 既にmemoに値がある場合は改行を挟んで追記し、空/NULLの場合はそのまま設定する。
+// memoは@textで上書きする(既存値の追記ではない。編集フォーム側で既存memoを
+// 初期値として表示し、ユーザーが編集した結果をそのまま設定する想定)。
 // (INSERTは行わない。該当レコードが無ければ404を返す)
 function buildMemoUpdateQuery(tableName) {
   return `
 UPDATE ${tableName}
-SET memo = CASE
-  WHEN memo IS NULL OR LTRIM(RTRIM(memo)) = N'' THEN @text
-  ELSE memo + N'\n' + @text
-END
+SET memo = @text
 OUTPUT INSERTED.memo
 WHERE SeiriNum = @seiriNum AND sagyoDD = @sagyoDD AND sagyoTT = @sagyoTT;
 `;
@@ -304,7 +302,7 @@ app.post('/api/records/memo', requireApiKey, async (req, res) => {
   if (!entry) {
     return res.status(400).json({ error: 'table must be one of: junin, foreign, foreignc' });
   }
-  if (!seiriNum || !sagyoDD || !sagyoTT || !text) {
+  if (!seiriNum || !sagyoDD || !sagyoTT || typeof text !== 'string') {
     return res.status(400).json({ error: 'table, seiriNum, sagyoDD, sagyoTT, text are all required' });
   }
   if (String(seiriNum).length > 20) {
