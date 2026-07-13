@@ -224,3 +224,191 @@ function formatDateTime_(isoOrDateString) {
   if (isNaN(d.getTime())) return String(isoOrDateString);
   return Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm');
 }
+
+// ---- 整理番号 自動追記(スペース監視ポーリング) -----------------------------
+//
+// 事務員が「整理番号 + 要件(フリーフォーマット)」を投稿するスペースを対象に、
+// 5分おきのポーリングで新着メッセージから整理番号を検出し、該当テーブルに
+// memo=そのメッセージのURL とする作業履歴を自動追加する。
+//
+// 事前準備(いずれも1度だけ手動実行):
+//   1. setMonitorConfig() 内のスペースresource name(例: 'spaces/AAAAxxxxxxx',
+//      複数ならカンマ区切り)を書き換えてから実行する。スペースIDはChatの
+//      URL(https://mail.google.com/chat/u/0/#chat/space/AAAAxxxxxxx)などから
+//      確認できる。
+//   2. setupPollingTrigger() を実行し、5分おきの時間主導型トリガーを作成する。
+//   3. 初回実行時、chat.messages.readonly スコープの承認ダイアログが出る。
+
+function setMonitorConfig() {
+  PropertiesService.getScriptProperties().setProperty(
+    'MONITOR_SPACES',
+    'spaces/your-space-id-here' // カンマ区切りで複数指定可
+  );
+}
+
+function setupPollingTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'pollSeiriNumMessages')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('pollSeiriNumMessages').timeBased().everyMinutes(5).create();
+}
+
+// テーブル判定パターン。1メッセージに複数の整理番号が含まれる場合は先頭に近い
+// ものを採用する。FP\d+PCT は FP\d+PCT[A-Z]{2} の前方一致になり得るため、
+// 具体的な(長い)パターンを先に判定する。
+const SEIRI_NUM_PATTERNS = [
+  { table: 'foreignc', re: /(?<![A-Za-z0-9])FP\d+PCT[A-Z]{2}(?![A-Za-z0-9])/g },
+  { table: 'foreign', re: /(?<![A-Za-z0-9])FP\d+PCT(?![A-Za-z0-9])/g },
+  { table: 'junin', re: /(?<![A-Za-z0-9])[A-Z]\d{9}(?![A-Za-z0-9])/g },
+];
+
+const AUTO_MEMO_SAGYO = '事務所メインより自動追加';
+const AUTO_MEMO_TANTO = '自動追記';
+
+/**
+ * 時間主導型トリガーから呼ばれるエントリポイント。
+ * MONITOR_SPACES に設定された各スペースをポーリングする。
+ */
+function pollSeiriNumMessages() {
+  const props = PropertiesService.getScriptProperties();
+  const spacesRaw = props.getProperty('MONITOR_SPACES');
+  if (!spacesRaw) {
+    console.log('MONITOR_SPACES未設定のためスキップ。setMonitorConfig()を編集して実行してください。');
+    return;
+  }
+
+  spacesRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .forEach((space) => {
+      try {
+        pollSpace_(space);
+      } catch (err) {
+        console.error(`${space} のポーリングでエラー:`, err);
+      }
+    });
+}
+
+/**
+ * 1スペース分のポーリング処理。前回ポーリング以降の新着メッセージを取得し、
+ * 整理番号を検出したメッセージがあれば自動追加する。
+ */
+function pollSpace_(space) {
+  const props = PropertiesService.getScriptProperties();
+  const lastPollKey = `LAST_POLL_${space}`;
+  const lastPollIso = props.getProperty(lastPollKey);
+  // 初回は過去10分から取得開始(5分間隔ポーリングの取りこぼし防止に余裕を持たせる)
+  const since = lastPollIso ? new Date(lastPollIso) : new Date(Date.now() - 10 * 60 * 1000);
+
+  const messages = listMessagesSince_(space, since);
+  if (messages.length === 0) return;
+
+  let latestCreateTime = since;
+  messages.forEach((message) => {
+    const createTime = new Date(message.createTime);
+    if (createTime > latestCreateTime) latestCreateTime = createTime;
+
+    if (message.sender && message.sender.type === 'BOT') return; // Bot自身の発言は無視
+    if (message.threadReply) return; // スレッドの子メッセージ(返信)は対象外。先頭メッセージのみ処理する
+
+    const found = extractFirstSeiriNum_(message.text || '');
+    if (!found) return;
+
+    const chatUrl = buildMessageUrl_(message.name);
+
+    try {
+      addAutoRecord_(found.table, found.seiriNum, chatUrl, AUTO_MEMO_TANTO);
+    } catch (err) {
+      console.error(`自動追加失敗 (${found.table}/${found.seiriNum}):`, err);
+    }
+  });
+
+  props.setProperty(lastPollKey, latestCreateTime.toISOString());
+}
+
+/**
+ * Chat REST API で指定スペースの createTime > since のメッセージを取得する。
+ * スクリプトを承認したユーザーの権限(chat.messages.readonly)で呼び出されるため、
+ * そのユーザーが対象スペースのメンバーである必要がある。
+ */
+function listMessagesSince_(space, since) {
+  const filter = encodeURIComponent(`createTime > "${since.toISOString()}"`);
+  const url =
+    `https://chat.googleapis.com/v1/${space}/messages?filter=${filter}&orderBy=createTime%20asc&pageSize=100`;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 200) {
+    throw new Error(`Chat API messages.list失敗 (status ${status}): ${response.getContentText()}`);
+  }
+
+  const data = JSON.parse(response.getContentText());
+  return data.messages || [];
+}
+
+/**
+ * フリーフォーマットの本文から最初の整理番号を抜き出し、テーブルを判定する。
+ */
+function extractFirstSeiriNum_(text) {
+  if (!text) return null;
+
+  let best = null;
+  SEIRI_NUM_PATTERNS.forEach((p) => {
+    p.re.lastIndex = 0;
+    const m = p.re.exec(text);
+    if (m && (!best || m.index < best.index)) {
+      best = { seiriNum: m[0], table: p.table, index: m.index };
+    }
+  });
+
+  return best ? { seiriNum: best.seiriNum, table: best.table } : null;
+}
+
+/**
+ * メッセージのresource name(spaces/{space}/messages/{threadId}.{messageId})から
+ * ブラウザで開けるURLを組み立てる。
+ * {message}部分は「{threadId}.{messageId}」の複合ID(スレッド先頭メッセージでは
+ * threadId===messageId)になっており、Chat UIの「リンクをコピー」で得られるURLは
+ * これを「.」区切りではなく「/」区切りのパスにした
+ * https://chat.google.com/room/{space}/{threadId}/{messageId} という形式(実機で確認済み)。
+ * 末尾の「?cls=…」はUI由来のトラッキング用パラメータで、無くてもアクセス可能。
+ */
+function buildMessageUrl_(messageName) {
+  const parts = messageName.split('/'); // ['spaces', '{space}', 'messages', '{threadId}.{messageId}']
+  const spaceId = parts[1];
+  const messagePath = parts[3].replace(/\./g, '/');
+  return `https://chat.google.com/room/${spaceId}/${messagePath}`;
+}
+
+/**
+ * 社内APIの POST /api/records を呼び出し、作業履歴を1件自動追加する。
+ */
+function addAutoRecord_(table, seiriNum, memo, tanto) {
+  const config = getConfig_();
+  const url = config.API_BASE_URL.replace(/\/$/, '') + '/api/records';
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-api-key': config.API_KEY },
+    payload: JSON.stringify({
+      table,
+      seiriNum,
+      sagyo: AUTO_MEMO_SAGYO,
+      tanto,
+      memo,
+    }),
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 201) {
+    throw new Error(`追加失敗 (status ${status}): ${response.getContentText()}`);
+  }
+}

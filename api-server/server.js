@@ -17,6 +17,13 @@
  * -----------------------------------------------------------------
  */
 
+// DB上のsagyoDD/sagyoTT/kigen/sagyoKanryoはタイムゾーン情報を持たない
+// 日本時間(JST)の素朴な値。mssqlドライバのデフォルト(useUTC: true)だと
+// これをUTCの値と取り違えてシリアライズしてしまい、Code.gs/UI側で
+// Asia/Tokyo変換をかけると9時間ずれる。プロセスのタイムゾーンをJSTに固定した
+// 上でuseUTC: falseにし、DBの素朴な値をJSTのローカル時刻として扱う。
+process.env.TZ = 'Asia/Tokyo';
+
 const path = require('path');
 const express = require('express');
 const morgan = require('morgan');
@@ -38,6 +45,7 @@ const dbConfig = {
   options: {
     encrypt: process.env.DB_ENCRYPT === 'true', // Azure SQL等は true, オンプレは環境に合わせる
     trustServerCertificate: process.env.DB_TRUST_SERVER_CERT !== 'false',
+    useUTC: false, // DBの素朴な値をJST(上記TZ設定)のローカル時刻として読み書きする
   },
   pool: {
     max: 10,

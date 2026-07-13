@@ -218,7 +218,49 @@ Botに整理番号だけを送信します。
 
 ---
 
-## 3. 注意点・今後の拡張候補
+## 3. 整理番号 自動追記(スペース監視ポーリング)
+
+事務員が「整理番号 + 要件(フリーフォーマット)」を投稿するスペースを対象に、5分おきの
+ポーリングで新着メッセージを取得し、整理番号を検出したら該当テーブルに
+`memo = そのメッセージのURL` / `sagyo = 「事務所メインより自動追加」` の作業履歴を自動追加します。
+`onMessage`(Botへの直接送信・メンション)とは独立した仕組みで、`apps-script/Code.gs` の
+`pollSeiriNumMessages` が本体です。
+
+### テーブル判定パターン
+
+| テーブル | 整理番号パターン |
+|---|---|
+| 国内 (`junin`) | `^[A-Z]\d{2}\d{4}\d{3}$` |
+| PCT国際段階 (`foreign`) | `^FP\d+PCT$` |
+| 外国(国別) (`foreignc`) | `^FP\d+PCT[A-Z]{2}$` |
+
+1メッセージに整理番号が複数含まれる場合は、本文中で最初に出現したものだけを採用します。
+
+### セットアップ(いずれも1度だけ手動実行)
+
+1. `appsscript.json` に `chat.messages.readonly` スコープを追加済みなので、再デプロイ後に
+   スクリプトエディタで `setMonitorConfig` を選んで実行する前に、関数内のスペースresource name
+   (例: `spaces/AAAAxxxxxxx`。複数ならカンマ区切り)を書き換える。スペースIDは
+   `https://mail.google.com/chat/u/0/#chat/space/AAAAxxxxxxx` のようなURLから確認できる。
+2. `setMonitorConfig` を実行する。
+3. `setupPollingTrigger` を実行し、5分おきの時間主導型トリガーを作成する。
+4. 初回実行時、`chat.messages.readonly` の承認ダイアログが出る(承認したアカウントの権限で
+   メッセージ一覧を取得するため、そのアカウントが監視対象スペースのメンバーである必要がある)。
+
+### 注意点
+
+- **メッセージURLの組み立て**: Google Chat APIの`Message`リソースには公式なpermalinkフィールドが
+  存在しないため、`buildMessageUrl_()` はメッセージのresource name
+  (`spaces/{space}/messages/{threadId}.{messageId}`)を`https://chat.google.com/room/{space}/{threadId}/{messageId}`
+  に変換して組み立てている(実機でChat UIの「リンクをコピー」結果と一致することを確認済み。
+  UI側のURLに付く`?cls=…`はトラッキング用パラメータで無くてもアクセス可能)。
+- 整理番号のパターンにマッチしても対象テーブルにそのSeiriNumが存在しない場合(誤字等)は
+  追加されず、Apps Scriptの実行ログにエラーが記録されるだけです(スペースへの通知は行いません)。
+- Botの発言(`sender.type === 'BOT'`)はスキャン対象から除外しています。
+- スレッドの子メッセージ(返信、`threadReply === true`)は対象外です。各スレッドの
+  先頭メッセージのみを監視します。
+
+## 4. 注意点・今後の拡張候補
 
 - 現状は `GET /api/progress` に整理番号を渡すだけのシンプルなAPIです。クライアント名や
   案件種別(特許/意匠/商標)で絞り込みたい場合は、別途そのマスタ情報がどのテーブルにあるか
