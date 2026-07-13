@@ -229,6 +229,58 @@ async function getFiling(pool, seiriNum) {
   };
 }
 
+// ---- ChatHistoryテーブル ------------------------------------------------
+// Google ChatのURLと、その内容を表すカテゴリを整理番号ひもづけで記録する。
+// 従来 JuninProcess/ForeignProcess/ForeignCProcess の memo列に書いていた
+// Chat URLは、今後このテーブルに集約する(このAPIサーバーではmemo列への
+// Chat URL追加は行わない)。
+// テーブルが存在しない場合に起動時に自動作成できるよう、DDLはここに定義する
+// (手動実行用のDDLは api-server/sql/create_chat_history.sql にも置いてある)。
+const ENSURE_CHAT_HISTORY_TABLE_QUERY = `
+IF OBJECT_ID('dbo.ChatHistory', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.ChatHistory (
+    id       INT IDENTITY(1,1) NOT NULL,
+    SeiriNum NVARCHAR(20)      NOT NULL,
+    ChatAt   DATETIME          NOT NULL,
+    Category NVARCHAR(50)      NOT NULL,
+    URL      NVARCHAR(500)     NOT NULL,
+    CONSTRAINT PK_ChatHistory PRIMARY KEY CLUSTERED (id)
+  );
+  CREATE INDEX IX_ChatHistory_SeiriNum ON dbo.ChatHistory (SeiriNum);
+END
+`;
+
+async function ensureChatHistoryTable(pool) {
+  await pool.request().query(ENSURE_CHAT_HISTORY_TABLE_QUERY);
+}
+
+// 新規追加時、整理番号がJuninProcess/ForeignProcess/ForeignCProcessのいずれにも
+// 存在しない場合はタイプミス等の可能性が高いため追加を拒否する(POST /api/records
+// と同じ考え方の存在チェック)。
+const CHAT_HISTORY_SEIRINUM_EXISTS_QUERY = `
+SELECT TOP 1 1 AS found FROM (
+  SELECT SeiriNum FROM JuninProcess WHERE SeiriNum = @seiriNum
+  UNION ALL
+  SELECT SeiriNum FROM ForeignProcess WHERE SeiriNum = @seiriNum
+  UNION ALL
+  SELECT SeiriNum FROM ForeignCProcess WHERE SeiriNum = @seiriNum
+) AS matched;
+`;
+
+const CHAT_HISTORY_LIST_QUERY = `
+SELECT id, SeiriNum, ChatAt, Category, URL
+FROM ChatHistory
+WHERE SeiriNum = @seiriNum
+ORDER BY ChatAt ASC;
+`;
+
+const CHAT_HISTORY_INSERT_QUERY = `
+INSERT INTO ChatHistory (SeiriNum, ChatAt, Category, URL)
+OUTPUT INSERTED.id, INSERTED.SeiriNum, INSERTED.ChatAt, INSERTED.Category, INSERTED.URL
+VALUES (@seiriNum, @chatAt, @category, @url);
+`;
+
 // ---- memo更新対象テーブルのホワイトリスト --------------------------------
 // テーブル名はSQLの識別子でありパラメータ化(バインド変数)できないため、
 // クライアントから受け取るのは下記キーのみとし、実テーブル名は必ずこの
@@ -528,6 +580,96 @@ app.post('/api/records/delete', requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/chat-history?seiriNum=XXXXX
+app.get('/api/chat-history', requireApiKey, async (req, res) => {
+  const seiriNum = (req.query.seiriNum || '').trim();
+  if (!seiriNum) {
+    return res.status(400).json({ error: 'seiriNum is required' });
+  }
+  if (seiriNum.length > 20) {
+    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNum)
+      .query(CHAT_HISTORY_LIST_QUERY);
+
+    return res.json({
+      seiriNum,
+      count: result.recordset.length,
+      records: result.recordset,
+    });
+  } catch (err) {
+    console.error('ChatHistory一覧取得エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/chat-history
+// body: { seiriNum, category, url, chatAt? }
+// chatAtは省略時サーバーの現在時刻を使う。指定する場合はDateとしてパース可能な
+// 形式(ISO文字列等)で渡すこと。
+app.post('/api/chat-history', requireApiKey, async (req, res) => {
+  const { seiriNum, category, url, chatAt } = req.body || {};
+
+  const seiriNumTrimmed = (seiriNum || '').trim();
+  if (!seiriNumTrimmed) {
+    return res.status(400).json({ error: 'seiriNum is required' });
+  }
+  if (seiriNumTrimmed.length > 20) {
+    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  }
+
+  const categoryTrimmed = (category || '').trim();
+  if (!categoryTrimmed) {
+    return res.status(400).json({ error: 'category is required' });
+  }
+  if (categoryTrimmed.length > 50) {
+    return res.status(400).json({ error: 'category too long (max 50 chars)' });
+  }
+
+  const urlTrimmed = (url || '').trim();
+  if (!urlTrimmed) {
+    return res.status(400).json({ error: 'url is required' });
+  }
+  if (urlTrimmed.length > 500) {
+    return res.status(400).json({ error: 'url too long (max 500 chars)' });
+  }
+
+  const chatAtDate = chatAt ? new Date(chatAt) : new Date();
+  if (Number.isNaN(chatAtDate.getTime())) {
+    return res.status(400).json({ error: 'invalid chatAt' });
+  }
+
+  try {
+    const pool = await getPool();
+
+    const existsResult = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNumTrimmed)
+      .query(CHAT_HISTORY_SEIRINUM_EXISTS_QUERY);
+    if (existsResult.recordset.length === 0) {
+      return res.status(400).json({ error: 'seiriNum_not_found' });
+    }
+
+    const result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(20), seiriNumTrimmed)
+      .input('chatAt', sql.DateTime, chatAtDate)
+      .input('category', sql.NVarChar(50), categoryTrimmed)
+      .input('url', sql.NVarChar(500), urlTrimmed)
+      .query(CHAT_HISTORY_INSERT_QUERY);
+
+    return res.status(201).json({ record: result.recordset[0] });
+  } catch (err) {
+    console.error('ChatHistory新規追加エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // ---- ヘルスチェック ---------------------------------------------------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -545,9 +687,10 @@ app.get('/api/progress', requireApiKey, async (req, res) => {
 
   try {
     const pool = await getPool();
-    const [result, filing] = await Promise.all([
+    const [result, filing, chatHistoryResult] = await Promise.all([
       pool.request().input('seiriNum', sql.NVarChar(20), seiriNum).query(SEARCH_QUERY),
       getFiling(pool, seiriNum),
+      pool.request().input('seiriNum', sql.NVarChar(20), seiriNum).query(CHAT_HISTORY_LIST_QUERY),
     ]);
 
     return res.json({
@@ -555,6 +698,7 @@ app.get('/api/progress', requireApiKey, async (req, res) => {
       count: result.recordset.length,
       records: result.recordset,
       filing,
+      chatHistory: chatHistoryResult.recordset,
     });
   } catch (err) {
     console.error('検索エラー:', err);
@@ -563,6 +707,17 @@ app.get('/api/progress', requireApiKey, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`進捗検索API起動: http://localhost:${PORT}`);
-});
+
+(async () => {
+  try {
+    const pool = await getPool();
+    await ensureChatHistoryTable(pool);
+    console.log('ChatHistoryテーブル確認完了');
+  } catch (err) {
+    console.error('起動時のChatHistoryテーブル確認に失敗しました:', err);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`進捗検索API起動: http://localhost:${PORT}`);
+  });
+})();

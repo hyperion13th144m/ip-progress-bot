@@ -69,7 +69,7 @@ function onMessage(event) {
       return textResponse_(`整理番号「${seiriNum}」の作業履歴は見つかりませんでした。`);
     }
 
-    return textResponse_(formatProgressMessage_(seiriNum, data.records, data.filing));
+    return textResponse_(formatProgressMessage_(seiriNum, data.records, data.filing, data.chatHistory));
   } catch (err) {
     console.error(err);
     return textResponse_(`エラーが発生しました: ${err.message}`);
@@ -144,7 +144,7 @@ const GENGO_LABEL = { 3: '昭', 4: '平', 5: '20' };
  * 検索結果をChatメッセージ用のテキストに整形する。
  * カテゴリごとにグループ化し、各カテゴリ内は新しい順に表示する。
  */
-function formatProgressMessage_(seiriNum, records, filing) {
+function formatProgressMessage_(seiriNum, records, filing, chatHistory) {
   const byCategory = {};
   records.forEach((r) => {
     if (!byCategory[r.category]) byCategory[r.category] = [];
@@ -194,6 +194,19 @@ function formatProgressMessage_(seiriNum, records, filing) {
     } else {
       filing.procedures.forEach((p) => {
         lines.push(`・${p.procedureDate}  ${p.procedure}`);
+      });
+    }
+  }
+
+  if (chatHistory) {
+    lines.push('');
+    lines.push(`*【チャット履歴】* (${chatHistory.length}件)`);
+    if (chatHistory.length === 0) {
+      lines.push('・(履歴なし)');
+    } else {
+      chatHistory.forEach((h) => {
+        const dt = formatDateTime_(h.ChatAt);
+        lines.push(`・${dt}　${h.Category}　<${h.URL}|リンク>`);
       });
     }
   }
@@ -257,13 +270,35 @@ function setupPollingTrigger() {
 // ものを採用する。FP\d+PCT は FP\d+PCT[A-Z]{2} の前方一致になり得るため、
 // 具体的な(長い)パターンを先に判定する。
 const SEIRI_NUM_PATTERNS = [
-  { table: 'foreignc', re: /(?<![A-Za-z0-9])FP\d+PCT[A-Z]{2}(?![A-Za-z0-9])/g },
+  { table: 'foreignc', re: /(?<![A-Za-z0-9])FP\d+PCT[A-Z]{2}(-DIV)?(?![A-Za-z0-9])/g },
   { table: 'foreign', re: /(?<![A-Za-z0-9])FP\d+PCT(?![A-Za-z0-9])/g },
   { table: 'junin', re: /(?<![A-Za-z0-9])[A-Z]\d{9}(?![A-Za-z0-9])/g },
 ];
 
-const AUTO_MEMO_SAGYO = '事務所メインより自動追加';
-const AUTO_MEMO_TANTO = '自動追記';
+// メッセージ本文からChatHistory.Categoryを判定するルール。
+// 上から順に判定し、最初にマッチしたものを採用する(どれにもマッチしなければ'その他')。
+// 実際のチャット履歴(約4.5万件)を解析して作成した。
+const CATEGORY_RULES = [
+  { category: '受任依頼', re: /受任/ },
+  { category: '年金納付', re: /年金.{0,5}納付/ },
+  { category: '審査請求', re: /審査請求/ },
+  { category: '早期審査', re: /早期審査/ },
+  { category: '分割出願', re: /分割出願/ },
+  { category: '原稿送付', re: /原稿.{0,10}送付|送付.{0,10}原稿/ },
+  { category: '原稿チェック依頼', re: /原稿.{0,10}(チェック|確認)/ },
+  { category: '意見書・補正書対応', re: /(意見書|補正書).{0,10}(提出|チェック|送付|送って|確認|作成|依頼)/ },
+  { category: '中間対応', re: /(コメント|見解書|拒絶理由通知|OA|ＯＡ|現地指示|現地代理人).{0,10}(チェック|送付|送って|作成|依頼)/ },
+  { category: '打合せ資料', re: /(打合せ|打ち合わせ).{0,10}資料/ },
+  { category: '出願手続', re: /出願手続/ },
+  { category: '請求書・費用', re: /請求書|見積|入金/ },
+  { category: '催促・リマインド', re: /（再掲）|\(再掲\)|再送|リマインド|【要ご返信】|進捗伺い/ },
+];
+
+function classifyCategory_(text) {
+  const t = text || '';
+  const hit = CATEGORY_RULES.find((rule) => rule.re.test(t));
+  return hit ? hit.category : 'その他';
+}
 
 /**
  * 時間主導型トリガーから呼ばれるエントリポイント。
@@ -312,22 +347,27 @@ function pollSpace_(space) {
     if (message.sender && message.sender.type === 'BOT') return; // Bot自身の発言は無視
     if (message.threadReply) return; // スレッドの子メッセージ(返信)は対象外。先頭メッセージのみ処理する
 
-    const found = extractFirstSeiriNum_(message.text || '');
-    if (!found) return;
+    const seiriNums = extractAllSeiriNums_(message.text || '');
+    if (seiriNums.length === 0) return;
 
     const chatUrl = buildMessageUrl_(message.name);
+    const category = classifyCategory_(message.text || '');
 
-    try {
-      // トリガーの多重実行や、バッチ途中のエラーで同じメッセージ範囲が
-      // 再ポーリングされた場合でも二重登録しないよう、追加前に同じチャットURLの
-      // レコードが既に存在しないか確認する。
-      if (recordAlreadyAdded_(found.table, found.seiriNum, chatUrl)) {
-        return;
+    // 1メッセージに複数の整理番号が含まれる場合、全ての整理番号に対して
+    // 同じ内容(ChatAt/URL/Category)の作業履歴を追加する。
+    seiriNums.forEach((seiriNum) => {
+      try {
+        // トリガーの多重実行や、バッチ途中のエラーで同じメッセージ範囲が
+        // 再ポーリングされた場合でも二重登録しないよう、追加前に同じチャットURLの
+        // レコードが既に存在しないか確認する。
+        if (chatHistoryAlreadyAdded_(seiriNum, chatUrl)) {
+          return;
+        }
+        addChatHistory_(seiriNum, category, chatUrl, createTime);
+      } catch (err) {
+        console.error(`ChatHistory自動追加失敗 (${seiriNum}):`, err);
       }
-      addAutoRecord_(found.table, found.seiriNum, chatUrl, AUTO_MEMO_TANTO);
-    } catch (err) {
-      console.error(`自動追加失敗 (${found.table}/${found.seiriNum}):`, err);
-    }
+    });
   });
 
   props.setProperty(lastPollKey, latestCreateTime.toISOString());
@@ -359,21 +399,22 @@ function listMessagesSince_(space, since) {
 }
 
 /**
- * フリーフォーマットの本文から最初の整理番号を抜き出し、テーブルを判定する。
+ * フリーフォーマットの本文に含まれる整理番号を全て抜き出す。
+ * 同じ整理番号が複数回登場する場合は重複排除するため、集合(Set)にまとめてから返す。
  */
-function extractFirstSeiriNum_(text) {
-  if (!text) return null;
+function extractAllSeiriNums_(text) {
+  if (!text) return [];
 
-  let best = null;
+  const found = new Set();
   SEIRI_NUM_PATTERNS.forEach((p) => {
     p.re.lastIndex = 0;
-    const m = p.re.exec(text);
-    if (m && (!best || m.index < best.index)) {
-      best = { seiriNum: m[0], table: p.table, index: m.index };
+    let m;
+    while ((m = p.re.exec(text)) !== null) {
+      found.add(m[0]);
     }
   });
 
-  return best ? { seiriNum: best.seiriNum, table: best.table } : null;
+  return Array.from(found);
 }
 
 /**
@@ -393,15 +434,14 @@ function buildMessageUrl_(messageName) {
 }
 
 /**
- * 対象テーブルの当該整理番号の既存レコードに、同じチャットURLをmemoに持つものが
- * 既にあるか確認する(自動追加の冪等性チェック)。
+ * 当該整理番号のChatHistoryに、同じチャットURLを持つレコードが既にあるか
+ * 確認する(自動追加の冪等性チェック)。
  */
-function recordAlreadyAdded_(table, seiriNum, chatUrl) {
+function chatHistoryAlreadyAdded_(seiriNum, chatUrl) {
   const config = getConfig_();
   const url =
     config.API_BASE_URL.replace(/\/$/, '') +
-    '/api/records?table=' + encodeURIComponent(table) +
-    '&seiriNum=' + encodeURIComponent(seiriNum);
+    '/api/chat-history?seiriNum=' + encodeURIComponent(seiriNum);
 
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
@@ -415,26 +455,25 @@ function recordAlreadyAdded_(table, seiriNum, chatUrl) {
   }
 
   const data = JSON.parse(response.getContentText());
-  return (data.records || []).some((r) => r.memo === chatUrl);
+  return (data.records || []).some((r) => r.URL === chatUrl);
 }
 
 /**
- * 社内APIの POST /api/records を呼び出し、作業履歴を1件自動追加する。
+ * 社内APIの POST /api/chat-history を呼び出し、ChatHistoryにChat URLを1件自動追加する。
  */
-function addAutoRecord_(table, seiriNum, memo, tanto) {
+function addChatHistory_(seiriNum, category, chatUrl, chatAt) {
   const config = getConfig_();
-  const url = config.API_BASE_URL.replace(/\/$/, '') + '/api/records';
+  const url = config.API_BASE_URL.replace(/\/$/, '') + '/api/chat-history';
 
   const response = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
     headers: { 'x-api-key': config.API_KEY },
     payload: JSON.stringify({
-      table,
       seiriNum,
-      sagyo: AUTO_MEMO_SAGYO,
-      tanto,
-      memo,
+      category,
+      url: chatUrl,
+      chatAt: chatAt.toISOString(),
     }),
     muteHttpExceptions: true,
   });
