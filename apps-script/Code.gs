@@ -318,6 +318,12 @@ function pollSpace_(space) {
     const chatUrl = buildMessageUrl_(message.name);
 
     try {
+      // トリガーの多重実行や、バッチ途中のエラーで同じメッセージ範囲が
+      // 再ポーリングされた場合でも二重登録しないよう、追加前に同じチャットURLの
+      // レコードが既に存在しないか確認する。
+      if (recordAlreadyAdded_(found.table, found.seiriNum, chatUrl)) {
+        return;
+      }
       addAutoRecord_(found.table, found.seiriNum, chatUrl, AUTO_MEMO_TANTO);
     } catch (err) {
       console.error(`自動追加失敗 (${found.table}/${found.seiriNum}):`, err);
@@ -384,6 +390,32 @@ function buildMessageUrl_(messageName) {
   const spaceId = parts[1];
   const messagePath = parts[3].replace(/\./g, '/');
   return `https://chat.google.com/room/${spaceId}/${messagePath}`;
+}
+
+/**
+ * 対象テーブルの当該整理番号の既存レコードに、同じチャットURLをmemoに持つものが
+ * 既にあるか確認する(自動追加の冪等性チェック)。
+ */
+function recordAlreadyAdded_(table, seiriNum, chatUrl) {
+  const config = getConfig_();
+  const url =
+    config.API_BASE_URL.replace(/\/$/, '') +
+    '/api/records?table=' + encodeURIComponent(table) +
+    '&seiriNum=' + encodeURIComponent(seiriNum);
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { 'x-api-key': config.API_KEY },
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 200) {
+    throw new Error(`重複チェック失敗 (status ${status}): ${response.getContentText()}`);
+  }
+
+  const data = JSON.parse(response.getContentText());
+  return (data.records || []).some((r) => r.memo === chatUrl);
 }
 
 /**
