@@ -267,10 +267,10 @@ function setupPollingTrigger() {
 }
 
 // テーブル判定パターン。1メッセージに複数の整理番号が含まれる場合は先頭に近い
-// ものを採用する。FP\d+PCT は FP\d+PCT[A-Z]{2} の前方一致になり得るため、
+// ものを採用する。FP\d+PCT は FP\d+(PCT)?[A-Z]{2} の前方一致になり得るため、
 // 具体的な(長い)パターンを先に判定する。
 const SEIRI_NUM_PATTERNS = [
-  { table: 'foreignc', re: /(?<![A-Za-z0-9])FP\d+PCT[A-Z]{2}(-DIV)?(?![A-Za-z0-9])/g },
+  { table: 'foreignc', re: /(?<![A-Za-z0-9])FP\d+(PCT)?[A-Z]{2}(-DIV)?(?![A-Za-z0-9])/g },
   { table: 'foreign', re: /(?<![A-Za-z0-9])FP\d+PCT(?![A-Za-z0-9])/g },
   { table: 'junin', re: /(?<![A-Za-z0-9])[A-Z]\d{9}(?![A-Za-z0-9])/g },
 ];
@@ -288,7 +288,7 @@ const CATEGORY_RULES = [
   { category: '原稿チェック依頼', re: /原稿.{0,10}(チェック|確認)/ },
   { category: '意見書・補正書対応', re: /(意見書|補正書).{0,10}(提出|チェック|送付|送って|確認|作成|依頼)/ },
   { category: '中間対応', re: /(コメント|見解書|拒絶理由通知|OA|ＯＡ|現地指示|現地代理人).{0,10}(チェック|送付|送って|作成|依頼)/ },
-  { category: '打合せ資料', re: /(打合せ|打ち合わせ).{0,10}資料/ },
+  { category: '打合せ', re: /(打合せ|打ち合わせ).{0,10}(資料|依頼)/ },
   { category: '出願手続', re: /出願手続/ },
   { category: '請求書・費用', re: /請求書|見積|入金/ },
   { category: '催促・リマインド', re: /（再掲）|\(再掲\)|再送|リマインド|【要ご返信】|進捗伺い/ },
