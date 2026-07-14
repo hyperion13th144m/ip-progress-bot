@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatHistory 更新</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    max-width: 900px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1.05rem; margin-top: 2rem; }
+  fieldset {
+    border: 1px solid #8884;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  label { display: block; font-size: 0.85rem; margin-bottom: 0.25rem; opacity: 0.8; }
+  input[type=text], input[type=password], select, textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem;
+    font-size: 1rem;
+    border-radius: 6px;
+    border: 1px solid #8888;
+    margin-bottom: 0.75rem;
+  }
+  button {
+    padding: 0.5rem 1.2rem;
+    font-size: 0.95rem;
+    border-radius: 6px;
+    border: 1px solid #8888;
+    cursor: pointer;
+    background: #2563eb;
+    color: white;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { background: #dc2626; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
+  th, td { border: 1px solid #8884; padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+  tr.selected { outline: 2px solid #2563eb; }
+  tr:hover { cursor: pointer; background: #8881; }
+  .url-cell { white-space: pre-wrap; max-width: 320px; word-break: break-all; }
+  #message { margin-top: 0.75rem; font-size: 0.9rem; }
+  #message.error { color: #dc2626; }
+  #message.ok { color: #16a34a; }
+  #selectedInfo { font-size: 0.9rem; opacity: 0.85; margin-bottom: 0.75rem; white-space: pre-wrap; }
+  .inline-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .inline-message { font-size: 0.9rem; }
+  .inline-message.error { color: #dc2626; }
+  .inline-message.ok { color: #16a34a; }
+  .panel {
+    border-radius: 10px;
+    padding: 1rem 1rem 0.25rem;
+    margin-bottom: 1.5rem;
+    background: rgba(217, 119, 6, 0.08);
+  }
+  .panel > h2:first-child { margin-top: 0; }
+  #resultArea { margin-bottom: 1.5rem; }
+  .nav-link { font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>ChatHistory 更新</h1>
+<p class="nav-link"><a href="/">進捗レコード メモ更新はこちら</a></p>
+
+<fieldset>
+  <legend>接続設定</legend>
+  <label for="apiKey">APIキー(x-api-key)</label>
+  <input type="password" id="apiKey" placeholder="api-server/.env の API_KEY">
+</fieldset>
+
+<fieldset>
+  <legend>整理番号で検索</legend>
+  <label for="seiriNum">整理番号</label>
+  <input type="text" id="seiriNum" placeholder="例: 12345-JP">
+  <button id="searchBtn">検索</button>
+</fieldset>
+
+<h2 class="inline-actions">検索結果(クリックで選択) <span id="searchMessage" class="inline-message"></span></h2>
+<div id="resultArea">まだ検索していません。</div>
+
+<section class="panel">
+<h2>選択中のレコード</h2>
+<div id="selectedInfo">レコードを選択してください。</div>
+<fieldset id="editForm" style="display:none;">
+  <label for="categoryInput">カテゴリ(一覧から選択、または自由入力)</label>
+  <input type="text" id="categoryInput" list="categoryOptions" placeholder="カテゴリを選択または入力">
+  <datalist id="categoryOptions"></datalist>
+  <label for="urlInput">URL</label>
+  <input type="text" id="urlInput" placeholder="https://chat.google.com/room/...">
+  <button id="updateBtn">更新</button>
+</fieldset>
+
+<fieldset id="deleteForm" style="display:none;">
+  <legend>このレコードを削除</legend>
+  <div class="inline-actions">
+    <button id="deleteRecordBtn" class="danger">選択中のレコードを削除</button>
+    <span id="deleteRecordMessage" class="inline-message"></span>
+  </div>
+</fieldset>
+</section>
+
+<div id="message"></div>
+
+<script>
+const state = { records: [], selectedIndex: -1 };
+
+// apps-script/Code.gs の CATEGORY_RULES と同じカテゴリ一覧(候補表示用)。
+const CATEGORY_OPTIONS = [
+  '受任依頼', '年金納付', '審査請求', '早期審査', '分割出願', '原稿送付',
+  '原稿チェック依頼', '意見書・補正書対応', '中間対応', '打合せ資料',
+  '出願手続', '請求書・費用', '催促・リマインド', 'その他',
+];
+
+const categoryOptionsEl = document.getElementById('categoryOptions');
+CATEGORY_OPTIONS.forEach((category) => {
+  const opt = document.createElement('option');
+  opt.value = category;
+  categoryOptionsEl.appendChild(opt);
+});
+
+const apiKeyInput = document.getElementById('apiKey');
+apiKeyInput.value = localStorage.getItem('juninApiKey') || '';
+apiKeyInput.addEventListener('change', () => {
+  localStorage.setItem('juninApiKey', apiKeyInput.value);
+});
+
+function showMessage(text, kind) {
+  const el = document.getElementById('message');
+  el.textContent = text;
+  el.className = kind || '';
+}
+
+function showDeleteRecordMessage(text, kind) {
+  const el = document.getElementById('deleteRecordMessage');
+  el.textContent = text;
+  el.className = 'inline-message ' + (kind || '');
+}
+
+function showSearchMessage(text, kind) {
+  const el = document.getElementById('searchMessage');
+  el.textContent = text;
+  el.className = 'inline-message ' + (kind || '');
+}
+
+function formatDateTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleString('ja-JP');
+}
+
+async function apiFetch(url, options) {
+  const headers = Object.assign({}, (options && options.headers) || {}, {
+    'x-api-key': apiKeyInput.value,
+  });
+  const res = await fetch(url, Object.assign({}, options, { headers }));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.error || ('HTTP ' + res.status));
+  }
+  return body;
+}
+
+function renderResults() {
+  const area = document.getElementById('resultArea');
+  if (state.records.length === 0) {
+    area.textContent = '該当レコードがありません。';
+    return;
+  }
+  const table = document.createElement('table');
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>日時</th><th>カテゴリ</th><th>URL</th>
+      </tr>
+    </thead>
+  `;
+  const tbody = document.createElement('tbody');
+  state.records.forEach((rec, idx) => {
+    const tr = document.createElement('tr');
+    if (idx === state.selectedIndex) tr.classList.add('selected');
+    const url = rec.URL || '';
+    const urlEscaped = url.replace(/</g, '&lt;');
+    tr.innerHTML = `
+      <td>${formatDateTime(rec.ChatAt)}</td>
+      <td>${rec.Category || ''}</td>
+      <td class="url-cell"><a href="${urlEscaped}" target="_blank" rel="noopener">${urlEscaped}</a></td>
+    `;
+    tr.addEventListener('click', () => selectRecord(idx));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  area.innerHTML = '';
+  area.appendChild(table);
+}
+
+function selectRecord(idx) {
+  state.selectedIndex = idx;
+  renderResults();
+  const rec = state.records[idx];
+  const infoEl = document.getElementById('selectedInfo');
+  infoEl.textContent = `整理番号: ${rec.SeiriNum}\n日時: ${formatDateTime(rec.ChatAt)}`;
+  document.getElementById('editForm').style.display = '';
+  document.getElementById('categoryInput').value = rec.Category || '';
+  document.getElementById('urlInput').value = rec.URL || '';
+  document.getElementById('deleteForm').style.display = '';
+  showDeleteRecordMessage('', '');
+}
+
+document.getElementById('searchBtn').addEventListener('click', async () => {
+  const seiriNum = document.getElementById('seiriNum').value.trim();
+  if (!seiriNum) {
+    showSearchMessage('整理番号を入力してください。', 'error');
+    return;
+  }
+  showSearchMessage('検索中...', '');
+  state.selectedIndex = -1;
+  document.getElementById('editForm').style.display = 'none';
+  document.getElementById('deleteForm').style.display = 'none';
+  document.getElementById('selectedInfo').textContent = 'レコードを選択してください。';
+  try {
+    const data = await apiFetch('/api/chat-history?seiriNum=' + encodeURIComponent(seiriNum));
+    state.seiriNum = seiriNum;
+    state.records = data.records || [];
+    renderResults();
+    showSearchMessage(`${state.records.length} 件見つかりました。`, 'ok');
+  } catch (err) {
+    state.records = [];
+    renderResults();
+    showSearchMessage('検索に失敗しました: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('updateBtn').addEventListener('click', async () => {
+  if (state.selectedIndex < 0) {
+    showMessage('レコードを選択してください。', 'error');
+    return;
+  }
+  const category = document.getElementById('categoryInput').value.trim();
+  if (!category) {
+    showMessage('カテゴリを選択または入力してください。', 'error');
+    return;
+  }
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) {
+    showMessage('URLを入力してください。', 'error');
+    return;
+  }
+  const rec = state.records[state.selectedIndex];
+  showMessage('更新中...', '');
+  try {
+    const data = await apiFetch('/api/chat-history/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: rec.id, category, url }),
+    });
+    Object.assign(rec, data.record);
+    renderResults();
+    selectRecord(state.selectedIndex);
+    showMessage('更新しました。', 'ok');
+  } catch (err) {
+    showMessage('更新に失敗しました: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('deleteRecordBtn').addEventListener('click', async () => {
+  if (state.selectedIndex < 0) {
+    showDeleteRecordMessage('レコードを選択してください。', 'error');
+    return;
+  }
+  const rec = state.records[state.selectedIndex];
+  const confirmed = confirm(
+    `以下のレコードを削除します。よろしいですか?\n\n` +
+    `整理番号: ${rec.SeiriNum}\n` +
+    `日時: ${formatDateTime(rec.ChatAt)}\n` +
+    `カテゴリ: ${rec.Category || ''}\n` +
+    `URL: ${rec.URL || ''}\n\n` +
+    `この操作は取り消せません。`
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  showDeleteRecordMessage('削除中...', '');
+  try {
+    await apiFetch('/api/chat-history/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: rec.id }),
+    });
+    state.records.splice(state.selectedIndex, 1);
+    state.selectedIndex = -1;
+    renderResults();
+    document.getElementById('editForm').style.display = 'none';
+    document.getElementById('deleteForm').style.display = 'none';
+    document.getElementById('selectedInfo').textContent = 'レコードを選択してください。';
+    showMessage('レコードを削除しました。', 'ok');
+  } catch (err) {
+    showDeleteRecordMessage('削除に失敗しました: ' + err.message, 'error');
+  }
+});
+</script>
+
+</body>
+</html>

@@ -281,6 +281,21 @@ OUTPUT INSERTED.id, INSERTED.SeiriNum, INSERTED.ChatAt, INSERTED.Category, INSER
 VALUES (@seiriNum, @chatAt, @category, @url);
 `;
 
+// idはIDENTITY主キーなので、ChatHistoryの更新/削除はSeiriNum+ChatAt等の複合キーではなく
+// idだけで一意に特定できる。
+const CHAT_HISTORY_UPDATE_QUERY = `
+UPDATE ChatHistory
+SET Category = @category, URL = @url
+OUTPUT INSERTED.id, INSERTED.SeiriNum, INSERTED.ChatAt, INSERTED.Category, INSERTED.URL
+WHERE id = @id;
+`;
+
+const CHAT_HISTORY_DELETE_QUERY = `
+DELETE FROM ChatHistory
+OUTPUT DELETED.id
+WHERE id = @id;
+`;
+
 // ---- memo更新対象テーブルのホワイトリスト --------------------------------
 // テーブル名はSQLの識別子でありパラメータ化(バインド変数)できないため、
 // クライアントから受け取るのは下記キーのみとし、実テーブル名は必ずこの
@@ -666,6 +681,77 @@ app.post('/api/chat-history', requireApiKey, async (req, res) => {
     return res.status(201).json({ record: result.recordset[0] });
   } catch (err) {
     console.error('ChatHistory新規追加エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/chat-history/update
+// body: { id, category, url }
+app.post('/api/chat-history/update', requireApiKey, async (req, res) => {
+  const { id, category, url } = req.body || {};
+
+  const idNum = Number(id);
+  if (!Number.isInteger(idNum)) {
+    return res.status(400).json({ error: 'id is required' });
+  }
+
+  const categoryTrimmed = (category || '').trim();
+  if (!categoryTrimmed) {
+    return res.status(400).json({ error: 'category is required' });
+  }
+  if (categoryTrimmed.length > 50) {
+    return res.status(400).json({ error: 'category too long (max 50 chars)' });
+  }
+
+  const urlTrimmed = (url || '').trim();
+  if (!urlTrimmed) {
+    return res.status(400).json({ error: 'url is required' });
+  }
+  if (urlTrimmed.length > 500) {
+    return res.status(400).json({ error: 'url too long (max 500 chars)' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('id', sql.Int, idNum)
+      .input('category', sql.NVarChar(50), categoryTrimmed)
+      .input('url', sql.NVarChar(500), urlTrimmed)
+      .query(CHAT_HISTORY_UPDATE_QUERY);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'record_not_found' });
+    }
+
+    return res.json({ record: result.recordset[0] });
+  } catch (err) {
+    console.error('ChatHistory更新エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// POST /api/chat-history/delete
+// body: { id }
+app.post('/api/chat-history/delete', requireApiKey, async (req, res) => {
+  const { id } = req.body || {};
+
+  const idNum = Number(id);
+  if (!Number.isInteger(idNum)) {
+    return res.status(400).json({ error: 'id is required' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool.request().input('id', sql.Int, idNum).query(CHAT_HISTORY_DELETE_QUERY);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'record_not_found' });
+    }
+
+    return res.json({ deleted: true });
+  } catch (err) {
+    console.error('ChatHistory削除エラー:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
