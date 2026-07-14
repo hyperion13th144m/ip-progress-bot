@@ -294,8 +294,23 @@ const CATEGORY_RULES = [
   { category: '催促・リマインド', re: /（再掲）|\(再掲\)|再送|リマインド|【要ご返信】|進捗伺い/ },
 ];
 
+// 行頭が「#」(半角)で始まる行は、その行末までをカテゴリとして明示指定できる
+// (例: 「#原稿確認依頼」だけの行があれば、カテゴリは「原稿確認依頼」になる)。
+// CATEGORY_RULESのキーワード判定より優先する。
+// 半角#のみを対象とする(実チャットデータ約4.5万件を解析した結果、行頭の半角#は
+// 一件も無かった一方、全角＃は「＃弊所は...」のような追伸的な文の先頭にも
+// 使われており誤判定の恐れがあったため)。
+const CATEGORY_OVERRIDE_LINE_RE = /^#(.+)$/m;
+
 function classifyCategory_(text) {
   const t = text || '';
+
+  const overrideMatch = CATEGORY_OVERRIDE_LINE_RE.exec(t);
+  if (overrideMatch) {
+    const category = overrideMatch[1].trim();
+    if (category) return category.slice(0, 50); // Category列はnvarchar(50)
+  }
+
   const hit = CATEGORY_RULES.find((rule) => rule.re.test(t));
   return hit ? hit.category : 'その他';
 }
