@@ -94,30 +94,6 @@
 <h2 class="inline-actions">検索結果(クリックで選択) <span id="searchMessage" class="inline-message"></span></h2>
 <div id="resultArea">まだ検索していません。</div>
 
-<section class="panel panel-add">
-<h2>新規作業レコードを追加</h2>
-<fieldset id="newRecordForm">
-  <p style="font-size:0.85rem; opacity:0.8; margin-top:0;">
-    対象は上の「対象テーブル」「整理番号」です。作業日・時刻は登録時の日時が自動で設定されます。
-  </p>
-  <label for="newSagyoCategory">作業カテゴリ</label>
-  <select id="newSagyoCategory"></select>
-  <label for="newSagyoInput">作業(一覧から選択、または自由入力)</label>
-  <input type="text" id="newSagyoInput" list="newSagyoOptions" placeholder="作業を選択または入力">
-  <datalist id="newSagyoOptions"></datalist>
-  <label for="newTanto">担当</label>
-  <input type="text" id="newTanto" placeholder="担当者名">
-  <label for="newMemo">memo</label>
-  <textarea id="newMemo" placeholder="メモを入力(改行可)"></textarea>
-  <div class="inline-actions">
-    <button id="addRecordBtn">追加</button>
-    <span id="addRecordMessage" class="inline-message"></span>
-  </div>
-</fieldset>
-</section>
-
-<hr class="section-divider">
-
 <section class="panel panel-selected">
 <h2>選択中のレコード</h2>
 <div id="selectedInfo">レコードを選択してください。</div>
@@ -141,6 +117,30 @@
   <div class="inline-actions">
     <button id="deleteRecordBtn" class="danger">選択中のレコードを削除</button>
     <span id="deleteRecordMessage" class="inline-message"></span>
+  </div>
+</fieldset>
+</section>
+
+<hr class="section-divider">
+
+<section class="panel panel-add">
+<h2>新規作業レコードを追加</h2>
+<fieldset id="newRecordForm">
+  <p style="font-size:0.85rem; opacity:0.8; margin-top:0;">
+    対象は上の「対象テーブル」「整理番号」です。作業日・時刻は登録時の日時が自動で設定されます。
+  </p>
+  <label for="newSagyoCategory">作業カテゴリ</label>
+  <select id="newSagyoCategory"></select>
+  <label for="newSagyoInput">作業(一覧から選択、または自由入力)</label>
+  <input type="text" id="newSagyoInput" list="newSagyoOptions" placeholder="作業を選択または入力">
+  <datalist id="newSagyoOptions"></datalist>
+  <label for="newTanto">担当</label>
+  <input type="text" id="newTanto" placeholder="担当者名">
+  <label for="newMemo">memo</label>
+  <textarea id="newMemo" placeholder="メモを入力(改行可)"></textarea>
+  <div class="inline-actions">
+    <button id="addRecordBtn">追加</button>
+    <span id="addRecordMessage" class="inline-message"></span>
   </div>
 </fieldset>
 </section>
