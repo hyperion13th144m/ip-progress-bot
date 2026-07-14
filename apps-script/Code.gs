@@ -192,9 +192,12 @@ function formatProgressMessage_(seiriNum, records, filing, chatHistory) {
     if (filing.procedures.length === 0) {
       lines.push('・(履歴なし)');
     } else {
-      filing.procedures.forEach((p) => {
-        lines.push(`・${p.procedureDate}  ${p.procedure}`);
-      });
+      filing.procedures
+        .slice()
+        .sort((a, b) => new Date(b.procedureDate) - new Date(a.procedureDate))
+        .forEach((p) => {
+          lines.push(`・${p.procedureDate}  ${p.procedure}`);
+        });
     }
   }
 
@@ -204,10 +207,13 @@ function formatProgressMessage_(seiriNum, records, filing, chatHistory) {
     if (chatHistory.length === 0) {
       lines.push('・(履歴なし)');
     } else {
-      chatHistory.forEach((h) => {
-        const dt = formatDateTime_(h.ChatAt);
-        lines.push(`・${dt}　${h.Category}　<${h.URL}|リンク>`);
-      });
+      chatHistory
+        .slice()
+        .sort((a, b) => new Date(b.ChatAt) - new Date(a.ChatAt))
+        .forEach((h) => {
+          const dt = formatDateTime_(h.ChatAt);
+          lines.push(`・${dt}　${h.Category}　<${h.URL}|リンク>`);
+        });
     }
   }
 
