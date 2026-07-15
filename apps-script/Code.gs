@@ -414,7 +414,12 @@ function pollSpace_(space) {
     });
   });
 
-  props.setProperty(lastPollKey, latestCreateTime.toISOString());
+  // Chat APIのcreateTimeはミリ秒未満(マイクロ秒)まで精度を持つが、
+  // JSのDateはミリ秒に切り捨てられる。切り捨てた値をそのままsinceとして
+  // 保存すると、次回ポーリングのフィルタ(createTime > since)に対して
+  // 元のメッセージの実際のcreateTime(端数分だけ大きい)が一致してしまい、
+  // 最後に処理した同じメッセージが再取得されてしまう。1ms加算して除外する。
+  props.setProperty(lastPollKey, new Date(latestCreateTime.getTime() + 1).toISOString());
 }
 
 /**
