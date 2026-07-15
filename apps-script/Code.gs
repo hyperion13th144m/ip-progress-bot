@@ -36,7 +36,10 @@ function getConfig_() {
 function onAddedToSpace(event) {
   return textResponse_(
     '整理番号 検索Botです。整理番号を送信してください(例: 12345-JP)。\n' +
-      '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。'
+      '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。\n' +
+      '「/担当者名」(例: /山崎)を送信すると、その担当者に紐づく整理番号のうち\n' +
+      '直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
+      '「/担当者名.N」(例: /山崎.3)で、直近Nヶ月に遡って検索できます(最大12)。'
   );
 }
 
@@ -55,6 +58,13 @@ function onMessage(event) {
     const message =
       (event.chat && event.chat.messagePayload && event.chat.messagePayload.message) || {};
     const rawText = message.text || '';
+
+    const tantoCommand = extractTantoCommand_(message.argumentText || rawText || '');
+    if (tantoCommand) {
+      const data = fetchTantoSeiriNums_(tantoCommand.tanto, tantoCommand.months);
+      return textResponse_(formatTantoMessage_(tantoCommand.tanto, tantoCommand.months, data.records));
+    }
+
     const seiriNum = extractSeiriNum_(rawText, message);
 
     if (!seiriNum) {
@@ -108,6 +118,75 @@ function extractSeiriNum_(rawText, message) {
   if (!cleaned) return null;
   if (cleaned.length > 20) return null; // SeiriNum は nvarchar(20)
   return cleaned;
+}
+
+// 「/担当者名.N」の月数指定の上限。Nがこれを超えても12ヶ月前に丸める。
+const TANTO_COMMAND_MAX_MONTHS = 12;
+
+/**
+ * メッセージが「/担当者名」または「/担当者名.N」(N=遡る月数)形式の
+ * コマンドかどうかを判定する。マッチすれば { tanto, months } を、
+ * マッチしなければnullを返す。
+ * ドットの後が数字でない場合は、ドット部分ごと担当者名の一部とみなし、
+ * monthsはデフォルトの1ヶ月とする。
+ */
+function extractTantoCommand_(text) {
+  const m = /^\s*\/(\S+)\s*$/.exec(text || '');
+  if (!m) return null;
+  const raw = m[1].trim();
+  if (!raw) return null;
+
+  const monthMatch = /^(.+)\.(\d+)$/.exec(raw);
+  if (!monthMatch) {
+    return { tanto: raw, months: 1 };
+  }
+
+  const months = Math.min(parseInt(monthMatch[2], 10), TANTO_COMMAND_MAX_MONTHS);
+  return { tanto: monthMatch[1], months };
+}
+
+/**
+ * 社内APIを呼び出して、指定担当者に紐づく整理番号一覧
+ * (最新のChatAtが直近monthsヶ月以内のものに限る)を取得する
+ */
+function fetchTantoSeiriNums_(tanto, months) {
+  const config = getConfig_();
+  const url =
+    config.API_BASE_URL.replace(/\/$/, '') +
+    '/api/tanto-seiri-nums?tanto=' +
+    encodeURIComponent(tanto) +
+    '&months=' +
+    encodeURIComponent(months);
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { 'x-api-key': config.API_KEY },
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 200) {
+    throw new Error(`API呼び出し失敗 (status ${status}): ${response.getContentText()}`);
+  }
+
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * 担当者別整理番号一覧をChatメッセージ用のテキストに整形する。
+ * 各整理番号について、最新のChatAt・Category・URL(リンク)を1行で表示する。
+ */
+function formatTantoMessage_(tanto, months, records) {
+  if (!records || records.length === 0) {
+    return `担当: ${tanto}(直近${months}ヶ月)\nチャット履歴のある整理番号は見つかりませんでした。`;
+  }
+
+  const lines = [`*担当: ${tanto}*  (直近${months}ヶ月・該当 ${records.length} 件)`];
+  records.forEach((r) => {
+    const dt = formatDateTime_(r.ChatAt);
+    lines.push(`・${r.SeiriNum}　${dt}　${r.Category}　<${r.URL}|リンク>`);
+  });
+  return lines.join('\n');
 }
 
 /**

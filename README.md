@@ -40,6 +40,13 @@ npm start
 - `x-api-key` ヘッダーが `.env` の `API_KEY` と一致しないと401を返します。
 - `sagyoTT`(時刻のみ有効・日付部分はUnixEpoch)と`sagyoDD`(日付のみ有効)を組み合わせて
   `actualDateTime` という実際の作業日時を算出し、これでソートしています。
+- `GET /api/tanto-seiri-nums?tanto=山崎&months=3` : 担当者(tantosya)に紐づく整理番号セットを
+  マスタテーブルから求め(国内は`JuninTable.SeiriNum`を`Tantosya`列で、外国は`ForeignTable`
+  (`tantosya`列)と`ForeignCountry`をSeiriNumで結合した`F_Num`列で判定)、それぞれ
+  `ChatHistory`上の最新の`ChatAt`/`Category`/`URL`を1件取得したうえで、最新`ChatAt`が直近
+  `months`ヶ月以内のものだけを`records`配列(`{ SeiriNum, ChatAt, Category, URL }`)で
+  返します。`months`は省略時1、
+  12を超える値は12に丸められます。
 
 ### 動作確認
 
@@ -221,6 +228,31 @@ Botに整理番号だけを送信します。
 【チャット履歴】 (2件)
 ・2024-06-04 10:05　原稿送付　<https://chat.google.com/room/...|リンク>
 ・2024-06-05 14:10　中間対応　<https://chat.google.com/room/...|リンク>
+```
+
+#### 担当者別 整理番号一覧
+
+`/担当者名` の形式でBotに送信すると、担当者(tantosya)に紐づく整理番号(国内は
+`JuninTable`、外国は`ForeignTable`+`ForeignCountry`から取得)のうち、`ChatHistory`の
+最新`ChatAt`が直近1ヶ月以内のものだけを一覧表示します。各整理番号の行には、その整理番号の
+最新の`ChatAt`/`Category`/`URL`を表示します(社内APIの`GET /api/tanto-seiri-nums?tanto=...`を使用)。
+
+`/担当者名.N`(末尾に`.数字`)を付けると、遡る月数をN ヶ月に変更できます
+(例: `/山崎.3` で直近3ヶ月)。Nは1〜12の範囲に丸められ(12超は12、ドット以降が数字で
+なければ1ヶ月扱い)、省略時は1ヶ月です。
+
+```
+/山崎
+/山崎.3
+```
+
+返信例:
+
+```
+担当: 山崎  (直近1ヶ月・該当 3 件)
+・E012026015     2026-02-23 10:23  原稿送付   リンク
+・I092022001     2026-02-24 10:23  出願依頼   リンク
+・FP2023001JP    2026-03-01 09:05  中間対応   リンク
 ```
 
 ---

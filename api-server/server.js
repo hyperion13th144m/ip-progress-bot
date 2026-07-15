@@ -756,6 +756,74 @@ app.post('/api/chat-history/delete', requireApiKey, async (req, res) => {
   }
 });
 
+// ---- 担当者別 整理番号一覧 ------------------------------------------------
+// 担当者(tantosya)に紐づく整理番号セットは、作業履歴テーブル(JuninProcess等)ではなく
+// マスタテーブルから求める。
+//  - 国内: JuninTable.SeiriNum(Tantosya列で担当者を判定)
+//  - 外国: ForeignTable(tantosya列で担当者を判定)とForeignCountryをSeiriNumで結合し、
+//    ForeignCountry.F_Num(国別の整理番号)を採用する
+// それぞれについてChatHistory上の最新のChatAtをCROSS APPLYで1件取得する
+// (同時刻の複数件はid DESCで一意化)。最新のChatAtが直近@monthsヶ月以内のものだけに
+// 絞り込んで返す(「直近Nヶ月以内のレコードが1件でもあるか」と「最新のChatAtが直近N
+// ヶ月以内か」はChatAtの最大値で判定する限り同値なので、この絞り込みで表示用の最新履歴も
+// 同時に取れる)。
+const TANTO_SEIRI_NUMS_QUERY = `
+WITH TantoSeiri AS (
+  SELECT DISTINCT SeiriNum FROM JuninTable WHERE Tantosya = @tanto
+  UNION
+  SELECT DISTINCT fc.F_Num AS SeiriNum
+  FROM ForeignTable ft
+  JOIN ForeignCountry fc ON ft.SeiriNum = fc.SeiriNum
+  WHERE ft.tantosya = @tanto
+)
+SELECT ts.SeiriNum, latest.ChatAt, latest.Category, latest.URL
+FROM TantoSeiri ts
+CROSS APPLY (
+  SELECT TOP 1 ChatAt, Category, URL
+  FROM ChatHistory ch
+  WHERE ch.SeiriNum = ts.SeiriNum
+  ORDER BY ChatAt DESC, id DESC
+) latest
+WHERE latest.ChatAt >= DATEADD(month, -@months, GETDATE())
+ORDER BY ts.SeiriNum;
+`;
+
+// 「/担当者名.N」で指定できる遡り月数の上限。GAS側(Code.gs)でも同じ上限で
+// 丸めているが、APIを直接叩かれた場合の防御としてサーバー側でも丸める。
+const TANTO_SEIRI_NUMS_MAX_MONTHS = 12;
+
+// GET /api/tanto-seiri-nums?tanto=山崎&months=3
+// months省略時・数値変換できない場合は1ヶ月とし、12を超える場合は12に丸める。
+app.get('/api/tanto-seiri-nums', requireApiKey, async (req, res) => {
+  const tanto = (req.query.tanto || '').trim();
+  if (!tanto) {
+    return res.status(400).json({ error: 'tanto is required' });
+  }
+
+  let months = parseInt(req.query.months, 10);
+  if (!Number.isInteger(months) || months < 1) months = 1;
+  if (months > TANTO_SEIRI_NUMS_MAX_MONTHS) months = TANTO_SEIRI_NUMS_MAX_MONTHS;
+
+  try {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('tanto', sql.NVarChar(sql.MAX), tanto)
+      .input('months', sql.Int, months)
+      .query(TANTO_SEIRI_NUMS_QUERY);
+
+    return res.json({
+      tanto,
+      months,
+      count: result.recordset.length,
+      records: result.recordset,
+    });
+  } catch (err) {
+    console.error('担当者別整理番号取得エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // ---- ヘルスチェック ---------------------------------------------------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
