@@ -325,16 +325,22 @@ const CATEGORY_RULES = [
 // 使われており誤判定の恐れがあったため)。
 const CATEGORY_OVERRIDE_LINE_RE = /^#(.+)$/m;
 
+// CATEGORY_RULESは本文全体ではなく先頭100文字のみに適用する
+// (var/messages.jsonの分析・ルール作成もこの前提で行っている)。
+const CATEGORY_RULES_HEAD_LENGTH = 100;
+
 function classifyCategory_(text) {
   const t = text || '';
 
+  // #override行は本文全体を対象に判定する(先頭100文字に絞らない)
   const overrideMatch = CATEGORY_OVERRIDE_LINE_RE.exec(t);
   if (overrideMatch) {
     const category = overrideMatch[1].trim();
     if (category) return category.slice(0, 50); // Category列はnvarchar(50)
   }
 
-  const hit = CATEGORY_RULES.find((rule) => rule.re.test(t));
+  const head = t.slice(0, CATEGORY_RULES_HEAD_LENGTH);
+  const hit = CATEGORY_RULES.find((rule) => rule.re.test(head));
   return hit ? hit.category : 'その他';
 }
 
