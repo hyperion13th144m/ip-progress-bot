@@ -31,19 +31,25 @@ function getConfig_() {
 // ---- Chat app トリガー ---------------------------------------------------
 
 /**
+ * ヘルプメッセージ本文(Botがスペースに追加された時、および
+ * 「help」「ヘルプ」を受信した時の両方で使う)
+ */
+const HELP_TEXT_ =
+  '整理番号 検索Botです。整理番号または客先整理番号を送信してください(例: X992025001)。\n' +
+  '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。\n\n' +
+  '「#担当者名」(例: #田中。全角＃も可)を送信すると、その担当者に紐づく整理番号のうち\n' +
+  '直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
+  '「#担当者名.N」(例: #田中.3)で、直近Nヶ月に遡って検索できます(最大12)。\n\n' +
+  '「%クライアント名」(例: %〇〇株式会社。全角％も可)を送信すると、そのクライアントに\n' +
+  '紐づく整理番号のうち直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
+  '「%クライアント名.N」(例: %〇〇株式会社.3)で、直近Nヶ月に遡って検索できます(最大12)。\n\n' +
+  '「help」または「ヘルプ」を送信すると、この使い方を再表示します。';
+
+/**
  * Botがスペースに追加された時
  */
 function onAddedToSpace(event) {
-  return textResponse_(
-    '整理番号 検索Botです。整理番号を送信してください(例: 12345-JP)。\n' +
-      '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。\n' +
-      '「#担当者名」(例: #山崎。全角＃も可)を送信すると、その担当者に紐づく整理番号のうち\n' +
-      '直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
-      '「#担当者名.N」(例: #山崎.3)で、直近Nヶ月に遡って検索できます(最大12)。\n' +
-      '「%クライアント名」(例: %〇〇株式会社。全角％も可)を送信すると、そのクライアントに\n' +
-      '紐づく整理番号のうち直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
-      '「%クライアント名.N」(例: %〇〇株式会社.3)で、直近Nヶ月に遡って検索できます(最大12)。'
-  );
+  return textResponse_(HELP_TEXT_);
 }
 
 /**
@@ -61,6 +67,10 @@ function onMessage(event) {
     const message =
       (event.chat && event.chat.messagePayload && event.chat.messagePayload.message) || {};
     const rawText = message.text || '';
+
+    if (isHelpCommand_(message.argumentText || rawText || '')) {
+      return textResponse_(HELP_TEXT_);
+    }
 
     const tantoCommand = extractTantoCommand_(message.argumentText || rawText || '');
     if (tantoCommand) {
@@ -132,6 +142,13 @@ function extractSeiriNum_(rawText, message) {
   if (!cleaned) return null;
   if (cleaned.length > 20) return null; // SeiriNum は nvarchar(20)
   return cleaned;
+}
+
+/**
+ * メッセージが「help」または「ヘルプ」(大文字小文字・前後空白は無視)かどうかを判定する。
+ */
+function isHelpCommand_(text) {
+  return /^\s*(help|ヘルプ)\s*$/i.test(text || '');
 }
 
 // 「#担当者名.N」の月数指定の上限。Nがこれを超えても12ヶ月前に丸める。
