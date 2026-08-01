@@ -89,8 +89,11 @@ function onMessage(event) {
     }
 
     // data.seiriNumは、seiriNumが客先整理番号だった場合にAPI側で解決された
-    // 真の整理番号(該当なしの場合は入力値のまま)。
-    return textResponse_(formatProgressMessage_(data.seiriNum, data.records, data.filing, data.chatHistory));
+    // 真の整理番号(該当なしの場合は入力値のまま)。入力値(seiriNum)と異なる
+    // 場合は客先整理番号として解決されたということなので、両方を表示する。
+    return textResponse_(
+      formatProgressMessage_(data.seiriNum, data.records, data.filing, data.chatHistory, seiriNum)
+    );
   } catch (err) {
     console.error(err);
     return textResponse_(`エラーが発生しました: ${err.message}`);
@@ -304,7 +307,9 @@ const GENGO_LABEL = { 3: '昭', 4: '平', 5: '20' };
  * 検索結果をChatメッセージ用のテキストに整形する。
  * カテゴリごとにグループ化し、各カテゴリ内は新しい順に表示する。
  */
-function formatProgressMessage_(seiriNum, records, filing, chatHistory) {
+// clientNumは、検索に使われた入力値(客先整理番号の可能性がある)。
+// seiriNum(真の整理番号)と異なる場合のみ、客先整理番号として別行で併記する。
+function formatProgressMessage_(seiriNum, records, filing, chatHistory, clientNum) {
   const byCategory = {};
   records.forEach((r) => {
     if (!byCategory[r.category]) byCategory[r.category] = [];
@@ -312,7 +317,12 @@ function formatProgressMessage_(seiriNum, records, filing, chatHistory) {
   });
 
   const lines = [];
-  lines.push(`*整理番号: ${seiriNum}*  (該当 ${records.length} 件)`);
+  if (clientNum && clientNum !== seiriNum) {
+    lines.push(`*整理番号: ${seiriNum}*`);
+    lines.push(`*客先整理番号: ${clientNum}*  (該当 ${records.length} 件)`);
+  } else {
+    lines.push(`*整理番号: ${seiriNum}*  (該当 ${records.length} 件)`);
+  }
 
   if (filing) {
     lines.push(formatFilingHeaderLine_(filing));
