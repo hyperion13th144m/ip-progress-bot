@@ -79,7 +79,9 @@ function onMessage(event) {
       return textResponse_(`整理番号「${seiriNum}」の作業履歴は見つかりませんでした。`);
     }
 
-    return textResponse_(formatProgressMessage_(seiriNum, data.records, data.filing, data.chatHistory));
+    // data.seiriNumは、seiriNumが客先整理番号だった場合にAPI側で解決された
+    // 真の整理番号(該当なしの場合は入力値のまま)。
+    return textResponse_(formatProgressMessage_(data.seiriNum, data.records, data.filing, data.chatHistory));
   } catch (err) {
     console.error(err);
     return textResponse_(`エラーが発生しました: ${err.message}`);

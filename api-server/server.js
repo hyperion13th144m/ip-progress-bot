@@ -155,6 +155,39 @@ FROM (
 ORDER BY law ASC;
 `;
 
+// ---- 客先整理番号 -> 真の整理番号 ----------------------------------------
+// APIのSeiriNumパラメータには整理番号そのものだけでなく、客先整理番号が
+// 入力されることも許容する。SEARCH_QUERYを整理番号として検索して0件だった
+// 場合にのみ、次のテーブルを客先整理番号として検索し、紐づく真の整理番号を
+// 探す。複数テーブルにヒットした場合は
+// Junin > Tokkyo > Jituyo > Design > Brand の優先順で1件のみ採用する。
+const CLIENT_NUM_LOOKUP_QUERY = `
+SELECT TOP 1 SeiriNum
+FROM (
+  SELECT SeiriNum, 1 AS priority FROM JuninTable WHERE ClientNum = @clientNum
+  UNION ALL
+  SELECT SeiriNum, 2 AS priority FROM TokkyoTable WHERE ReferNum = @clientNum
+  UNION ALL
+  SELECT SeiriNum, 3 AS priority FROM JituyoTable WHERE ReferNum = @clientNum
+  UNION ALL
+  SELECT SeiriNum, 4 AS priority FROM DesignTable WHERE ReferNum = @clientNum
+  UNION ALL
+  SELECT SeiriNum, 5 AS priority FROM BrandTable WHERE ReferNum = @clientNum
+) AS matched
+ORDER BY priority ASC;
+`;
+
+// ClientNumはnvarchar(50)なので、真の整理番号(nvarchar(20))より長い値も
+// そのまま受け付けられるようパラメータ長は50で渡す。
+async function resolveSeiriNumByClientNum(pool, clientNum) {
+  const result = await pool
+    .request()
+    .input('clientNum', sql.NVarChar(50), clientNum)
+    .query(CLIENT_NUM_LOOKUP_QUERY);
+
+  return result.recordset.length > 0 ? result.recordset[0].SeiriNum : null;
+}
+
 function formatDate(date) {
   if (!date) return null;
   const d = new Date(date);
@@ -829,20 +862,42 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 // ---- 進捗検索エンドポイント ---------------------------------------------
 // GET /api/progress?seiriNum=XXXXX
+// seiriNumには整理番号そのものだけでなく客先整理番号も入力できる。まず整理番号
+// として検索し、0件だった場合のみ客先整理番号としての検索に切り替える
+// (resolveSeiriNumByClientNum参照)。
 app.get('/api/progress', requireApiKey, async (req, res) => {
-  const seiriNum = (req.query.seiriNum || '').trim();
+  const inputSeiriNum = (req.query.seiriNum || '').trim();
 
-  if (!seiriNum) {
+  if (!inputSeiriNum) {
     return res.status(400).json({ error: 'seiriNum is required' });
   }
-  if (seiriNum.length > 20) {
-    return res.status(400).json({ error: 'seiriNum too long (max 20 chars)' });
+  // ClientNum(nvarchar(50))が入力される可能性があるため、整理番号(nvarchar(20))
+  // より長い上限で受け付ける。
+  if (inputSeiriNum.length > 50) {
+    return res.status(400).json({ error: 'seiriNum too long (max 50 chars)' });
   }
 
   try {
     const pool = await getPool();
-    const [result, filing, chatHistoryResult] = await Promise.all([
-      pool.request().input('seiriNum', sql.NVarChar(20), seiriNum).query(SEARCH_QUERY),
+
+    let seiriNum = inputSeiriNum;
+    let result = await pool
+      .request()
+      .input('seiriNum', sql.NVarChar(50), seiriNum)
+      .query(SEARCH_QUERY);
+
+    if (result.recordset.length === 0) {
+      const resolvedSeiriNum = await resolveSeiriNumByClientNum(pool, inputSeiriNum);
+      if (resolvedSeiriNum) {
+        seiriNum = resolvedSeiriNum;
+        result = await pool
+          .request()
+          .input('seiriNum', sql.NVarChar(20), seiriNum)
+          .query(SEARCH_QUERY);
+      }
+    }
+
+    const [filing, chatHistoryResult] = await Promise.all([
       getFiling(pool, seiriNum),
       pool.request().input('seiriNum', sql.NVarChar(20), seiriNum).query(CHAT_HISTORY_LIST_QUERY),
     ]);
