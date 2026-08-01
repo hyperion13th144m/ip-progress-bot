@@ -857,6 +857,80 @@ app.get('/api/tanto-seiri-nums', requireApiKey, async (req, res) => {
   }
 });
 
+// ---- クライアント別 整理番号一覧 --------------------------------------------
+// TANTO_SEIRI_NUMS_QUERYと同じ考え方で、Tantosya列の代わりにClientName列で
+// 絞り込む。ClientNameは前方・後方どちらの省略も許容する部分一致(LIKE '%...%')
+// で判定する(escapeLikePattern_で%/_/[/\をエスケープした上で前後に%を付与した
+// 値を@clientに渡す)。
+//  - 国内: JuninTable.SeiriNum(ClientName列でクライアントを判定)
+//  - 外国: ForeignTable(ClientName列でクライアントを判定)とForeignCountryを
+//    SeiriNumで結合し、ForeignCountry.F_Num(国別の整理番号)を採用する
+const CLIENT_SEIRI_NUMS_QUERY = `
+WITH ClientSeiri AS (
+  SELECT DISTINCT SeiriNum FROM JuninTable WHERE ClientName LIKE @client ESCAPE '\\'
+  UNION
+  SELECT DISTINCT fc.F_Num AS SeiriNum
+  FROM ForeignTable ft
+  JOIN ForeignCountry fc ON ft.SeiriNum = fc.SeiriNum
+  WHERE ft.ClientName LIKE @client ESCAPE '\\'
+)
+SELECT cs.SeiriNum, latest.ChatAt, latest.Category, latest.URL
+FROM ClientSeiri cs
+CROSS APPLY (
+  SELECT TOP 1 ChatAt, Category, URL
+  FROM ChatHistory ch
+  WHERE ch.SeiriNum = cs.SeiriNum
+  ORDER BY ChatAt DESC, id DESC
+) latest
+WHERE latest.ChatAt >= DATEADD(month, -@months, GETDATE())
+ORDER BY cs.SeiriNum;
+`;
+
+// 「%クライアント名.N」で指定できる遡り月数の上限。GAS側(Code.gs)でも同じ上限で
+// 丸めているが、APIを直接叩かれた場合の防御としてサーバー側でも丸める。
+const CLIENT_SEIRI_NUMS_MAX_MONTHS = 12;
+
+// LIKE '%...%' に渡す値の中でワイルドカードとして解釈される文字(\ % _ [)を
+// エスケープする。クライアント名の一部にたまたま%や_が含まれていても、それを
+// リテラル文字として扱うため(CLIENT_SEIRI_NUMS_QUERYのESCAPE '\'と対応)。
+function escapeLikePattern_(value) {
+  return value.replace(/[\\%_[]/g, (ch) => `\\${ch}`);
+}
+
+// GET /api/client-seiri-nums?client=〇〇&months=3
+// clientは部分一致(前方・後方の省略を許容)で検索する。
+// months省略時・数値変換できない場合は1ヶ月とし、12を超える場合は12に丸める。
+app.get('/api/client-seiri-nums', requireApiKey, async (req, res) => {
+  const client = (req.query.client || '').trim();
+  if (!client) {
+    return res.status(400).json({ error: 'client is required' });
+  }
+
+  let months = parseInt(req.query.months, 10);
+  if (!Number.isInteger(months) || months < 1) months = 1;
+  if (months > CLIENT_SEIRI_NUMS_MAX_MONTHS) months = CLIENT_SEIRI_NUMS_MAX_MONTHS;
+
+  try {
+    const pool = await getPool();
+    const clientPattern = `%${escapeLikePattern_(client)}%`;
+    const result = await pool
+      .request()
+      .input('client', sql.NVarChar(sql.MAX), clientPattern)
+      .input('months', sql.Int, months)
+      .query(CLIENT_SEIRI_NUMS_QUERY);
+
+    return res.json({
+      client,
+      months,
+      count: result.recordset.length,
+      records: result.recordset,
+    });
+  } catch (err) {
+    console.error('クライアント別整理番号取得エラー:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // ---- ヘルスチェック ---------------------------------------------------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

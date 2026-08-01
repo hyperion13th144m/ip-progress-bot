@@ -39,7 +39,10 @@ function onAddedToSpace(event) {
       '国内・PCT国際段階・外国(国別)の作業履歴をまとめて表示します。\n' +
       '「#担当者名」(例: #山崎。全角＃も可)を送信すると、その担当者に紐づく整理番号のうち\n' +
       '直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
-      '「#担当者名.N」(例: #山崎.3)で、直近Nヶ月に遡って検索できます(最大12)。'
+      '「#担当者名.N」(例: #山崎.3)で、直近Nヶ月に遡って検索できます(最大12)。\n' +
+      '「%クライアント名」(例: %〇〇株式会社。全角％も可)を送信すると、そのクライアントに\n' +
+      '紐づく整理番号のうち直近1ヶ月以内にチャット履歴があるものの一覧を表示します。\n' +
+      '「%クライアント名.N」(例: %〇〇株式会社.3)で、直近Nヶ月に遡って検索できます(最大12)。'
   );
 }
 
@@ -63,6 +66,12 @@ function onMessage(event) {
     if (tantoCommand) {
       const data = fetchTantoSeiriNums_(tantoCommand.tanto, tantoCommand.months);
       return textResponse_(formatTantoMessage_(tantoCommand.tanto, tantoCommand.months, data.records));
+    }
+
+    const clientCommand = extractClientCommand_(message.argumentText || rawText || '');
+    if (clientCommand) {
+      const data = fetchClientSeiriNums_(clientCommand.client, clientCommand.months);
+      return textResponse_(formatClientMessage_(clientCommand.client, clientCommand.months, data.records));
     }
 
     const seiriNum = extractSeiriNum_(rawText, message);
@@ -147,6 +156,31 @@ function extractTantoCommand_(text) {
   return { tanto: monthMatch[1], months };
 }
 
+// 「%クライアント名.N」の月数指定の上限。Nがこれを超えても12ヶ月前に丸める。
+const CLIENT_COMMAND_MAX_MONTHS = 12;
+
+/**
+ * メッセージが「%クライアント名」または「%クライアント名.N」(N=遡る月数)形式の
+ * コマンドかどうかを判定する。先頭の%は半角(%)・全角(％)のどちらも受け付ける。
+ * マッチすれば { client, months } を、マッチしなければnullを返す。
+ * ドットの後が数字でない場合は、ドット部分ごとクライアント名の一部とみなし、
+ * monthsはデフォルトの1ヶ月とする。
+ */
+function extractClientCommand_(text) {
+  const m = /^\s*[%％](\S+)\s*$/.exec(text || '');
+  if (!m) return null;
+  const raw = m[1].trim();
+  if (!raw) return null;
+
+  const monthMatch = /^(.+)\.(\d+)$/.exec(raw);
+  if (!monthMatch) {
+    return { client: raw, months: 1 };
+  }
+
+  const months = Math.min(parseInt(monthMatch[2], 10), CLIENT_COMMAND_MAX_MONTHS);
+  return { client: monthMatch[1], months };
+}
+
 /**
  * 社内APIを呼び出して、指定担当者に紐づく整理番号一覧
  * (最新のChatAtが直近monthsヶ月以内のものに限る)を取得する
@@ -184,6 +218,51 @@ function formatTantoMessage_(tanto, months, records) {
   }
 
   const lines = [`*担当: ${tanto}*  (直近${months}ヶ月・該当 ${records.length} 件)`];
+  records.forEach((r) => {
+    const dt = formatDateTime_(r.ChatAt);
+    lines.push(`・${r.SeiriNum}　${dt}　${r.Category}　<${r.URL}|リンク>`);
+  });
+  return lines.join('\n');
+}
+
+/**
+ * 社内APIを呼び出して、指定クライアントに紐づく整理番号一覧
+ * (最新のChatAtが直近monthsヶ月以内のものに限る)を取得する
+ */
+function fetchClientSeiriNums_(client, months) {
+  const config = getConfig_();
+  const url =
+    config.API_BASE_URL.replace(/\/$/, '') +
+    '/api/client-seiri-nums?client=' +
+    encodeURIComponent(client) +
+    '&months=' +
+    encodeURIComponent(months);
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { 'x-api-key': config.API_KEY },
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 200) {
+    throw new Error(`API呼び出し失敗 (status ${status}): ${response.getContentText()}`);
+  }
+
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * クライアント別整理番号一覧をChatメッセージ用のテキストに整形する。
+ * formatTantoMessage_と同じ形式(各整理番号について、最新のChatAt・Category・
+ * URL(リンク)を1行で表示)。
+ */
+function formatClientMessage_(client, months, records) {
+  if (!records || records.length === 0) {
+    return `クライアント: ${client}(直近${months}ヶ月)\nチャット履歴のある整理番号は見つかりませんでした。`;
+  }
+
+  const lines = [`*クライアント: ${client}*  (直近${months}ヶ月・該当 ${records.length} 件)`];
   records.forEach((r) => {
     const dt = formatDateTime_(r.ChatAt);
     lines.push(`・${r.SeiriNum}　${dt}　${r.Category}　<${r.URL}|リンク>`);
